@@ -18,7 +18,7 @@ design notes, `tests/`, `experiments/`; `make` puts generated files in `build/` 
 ## Usage
 
 ```
-    v32as [-b|-c|-O ADDR] [-o FILE] [-g[MODE]] [-w] [-D NAME[=VAL]] [-U NAME] [-I DIR]
+    v32as [-b|-c|-O ADDR] [-o FILE] [-g[MODE]] [--map FILE] [-r FILE] [-w] [-D NAME[=VAL]] [-U NAME] [-I DIR]
           [--standard] [-T|-n] [-E [-P]] [-s] [-v] [FILE...|-]
 ```
 
@@ -32,10 +32,18 @@ a VBIN for a cartridge. (Reading STDIN, the output goes to STDOUT.)
   (`-B/--binary` still exists, and only says what is already the default.)
 - `-w/--no-warnings` inhibits all warnings.
 - `-g/--debug[=MODE]` also writes `FILE.debug` (CSV `address,file,line[,label]`, one line per instruction) next to the output file. Plain `-g` is byte-identical to the official assembler's `-g program` (absolute word addresses, e.g. `0x20000000`). `-g vbin` / `-g v32` give real byte offsets in the .vbin (0x0C header) or .v32 (0x8C header) file; the official tool's versions of those two print wrapped-around values. A source file literally named `program`, `vbin` or `v32` must be written `./program`.
+- `--map FILE` (with `-g`): FILE is the compiler's debug file (`asmfile,asmline,cfile,cline[,function]`, as `v32cc -g` writes it). The `.debug` file then has the same layout, but each instruction names the C file and line (and the function as the label column), which is what v32sim's C overlay reads. Instructions whose assembly line is not in FILE are left out.
+- `-r/--relocs FILE` writes `index,0xVALUE` for every word that holds an address resolved from a label (code or data, `label+N` included) or computed from the instruction's own address (`MOV Rn, IP`, the `IR`/`IV` patch addresses). Plain numbers that happen to look like addresses are never listed, so a loader can relocate a module by adding the base difference to those words.
 - `-s/--step` pauses per statement, `-v/--verbose` shows the encoded bit fields
 - no files and a terminal on stdin starts the REPL: `.help .labels .dump .reset .quit`
 - `-` reads stdin; the legacy bare words (`bios`, `cart`, ...) still work
 - Preprocessor options: `-D`, `-U`, `-I`, `-E`, `-P` (see below).
+
+### Label plus constant
+
+Wherever a label is accepted as a value, `label + integer` or `label - integer` is too (one label, one
+constant): `mov R0, _tab+2`, `mov R1, [_tab+3]`, `mov [_tab-1], R1`, `jmp _f+4`, `pointer _tab+1, _end`. It is
+resolved like a plain label (forward references included). `--standard` refuses it.
 
 ### `--standard`: the official assembler, exactly
 
@@ -49,6 +57,7 @@ program is portable to it):
 | directives | only the stock ones, spelled in lowercase; no `%if %elif %assign %eval %includeonce`, no function-like macros (`%define F(x) ...` defines the plain macro `F` whose value starts with `(x)`), no `.local` labels, no `__FILE__`-style symbols |
 | `%define` | a value that contains its own name, or a `%`, is an error |
 | `%include` | `"file"` only, relative to the including file only (no `-I`, no `<file>`) |
+| operands | `label +/- integer` is an error |
 | `datafile` | the path is used as given (not looked up next to the source file first) |
 | command line | one input file only; `-s` does nothing; `-v` prints the official stage messages |
 | unterminated `%if` | a warning (the official tool accepts it silently) |

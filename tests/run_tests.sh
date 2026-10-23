@@ -68,6 +68,15 @@ for f in std/*.ref; do
   "$BIN" --standard --cart -o "$T/sb.vbin" "$f" 2>"$T/err"    || { bad "$f (--standard assemble)"; continue; }
   cmp -s "$T/sa.vbin" "$T/sb.vbin" && ok || bad "$n (--standard differs from its .ref)"
 done
+# label +/- constant, the relocation list (-r) and the compiler debug map (--map)
+printf '  mov R0, _t+2\n  mov R1, [_t-1]\n  pointer _t+1\n_t: hlt\n' > "$T/lo.asm"
+"$BIN" --cart -w -o "$T/lo.vbin" "$T/lo.asm" && od -An -tx4 -v -w4 "$T/lo.vbin" | tail -n +4 | tr -d '\n' \
+  | grep -q '^ 4e000000 20000007 4e208000 20000004 20000006 00000000$' && ok || bad "label + constant"
+"$BIN" --standard --none "$T/lo.asm" >/dev/null 2>&1 && bad "label + constant under --standard" || ok
+( cd map && "$BIN" --cart -w -o "$T/r.vbin" -r "$T/r.rel" labeloff.asm ) 2>/dev/null
+cmp -s "$T/r.rel" map/labeloff.rel && ok || bad "-r relocation list differs"
+( cd map && "$BIN" --cart -w -g --map labeloff.map -o "$T/m.vbin" labeloff.asm ) 2>/dev/null
+cmp -s "$T/m.vbin.debug" map/labeloff.debug && ok || bad "--map debug file differs"
 # command line: binary output by default, as the official assembler does
 printf '  mov R0, 0100\n  hlt\n' > "$T/x.asm"
 "$BIN" -w "$T/x.asm" 2>"$T/err" && [ -f "$T/x.vbin" ] && ok || bad "default output file x.vbin"

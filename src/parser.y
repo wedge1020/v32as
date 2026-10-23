@@ -91,7 +91,7 @@ typedef void  *yyscan_t;
 
 %type <reg>   reg
 %type <num>   sint offs
-%type <imm>   imm_val
+%type <imm>   imm_val label_ref
 %type <port>  port
 
 %destructor { free ($$.p); } <str>
@@ -134,9 +134,14 @@ offs
     | T_MINUS T_NUMBER               { $$ = num_negate (ctx, &@$, $2); }
     ;
 
+label_ref
+    : T_LABEL                        { $$ = imm_from_sym ($1); }
+    | T_LABEL offs                   { $$ = imm_label_offset (ctx, &@$, $1, $2); }
+    ;
+
 imm_val
     : sint                           { $$ = imm_any ($1); }
-    | T_LABEL                        { $$ = imm_from_sym ($1); }
+    | label_ref                      { $$ = $1; }
     ;
 
 port
@@ -241,8 +246,8 @@ float_list
     ;
 
 pointer_list
-    : T_LABEL                        { asm_data_word (ctx, &@1, imm_from_sym ($1)); }
-    | pointer_list T_COMMA T_LABEL   { asm_data_word (ctx, &@3, imm_from_sym ($3)); }
+    : label_ref                      { asm_data_word (ctx, &@1, $1); }
+    | pointer_list T_COMMA label_ref { asm_data_word (ctx, &@3, $3); }
     ;
 
 %%

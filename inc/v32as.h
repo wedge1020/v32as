@@ -112,10 +112,12 @@ typedef struct
     uint32_t  bits;
     sym_t    *sym;
     int       is_float;
+    uint32_t  addend;               // IMM_SYM: constant added to the label's address
+    int       reloc;                // IMM_BITS: the value is an address derived from the location
 }
 imm_t;
 
-#define  NOIMM  ((imm_t) { IMM_NONE, 0, NULL, 0 })
+#define  NOIMM  ((imm_t) { IMM_NONE, 0, NULL, 0, 0, 0 })
 
 typedef struct
 {
@@ -132,6 +134,7 @@ typedef struct
 {
     uint32_t     word;              // index into the output word array
     sym_t       *sym;
+    uint32_t     addend;
     const char  *file;
     loc_t        loc;
 }
@@ -174,6 +177,11 @@ typedef struct asm_ctx
     fixup_t     *fix;
     size_t       nfix;
     size_t       fixcap;
+
+    // words holding an address (label references, IP-relative values), for -r
+    uint32_t    *rel;
+    size_t       nrel;
+    size_t       relcap;
 
     // instruction -> source line records (for -g)
     dbgrec_t    *rec;
@@ -225,6 +233,8 @@ void    asm_resolve         (const asm_t *a, int line, const char **file, int *s
 int     asm_finish          (asm_t *a);
 int     asm_write_vbin      (asm_t *a, FILE *fp);
 int     asm_write_debug     (asm_t *a, FILE *fp, dbgmode_t mode);
+int     asm_write_relocs    (asm_t *a, FILE *fp);
+int     asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode, FILE *cmap, const char *cmap_name);
 void    asm_print_labels    (asm_t *a, FILE *fp);
 
 void    asm_error           (asm_t *a, const loc_t *loc, const char *fmt, ...)
@@ -238,6 +248,7 @@ void    asm_label_define    (asm_t *a, sym_t *s, const loc_t *loc);
 // numeric helpers used by the grammar
 num_t   num_negate          (asm_t *a, const loc_t *loc, num_t n);
 imm_t   imm_from_sym        (sym_t *s);
+imm_t   imm_label_offset    (asm_t *a, const loc_t *loc, sym_t *s, num_t off);   // label +/- integer
 imm_t   imm_any             (num_t n);                      // bits exactly as written
 imm_t   imm_integer         (asm_t *a, const loc_t *loc, num_t n);
 imm_t   imm_float           (num_t n);                      // integers get converted

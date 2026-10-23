@@ -49,6 +49,8 @@ typedef struct
     int          preprocess;        // -E: stop after preprocessing
     int          no_markers;        // -P: no line markers in -E output
     const char  *output;
+    const char  *relocs;            // -r FILE: list of address-holding words
+    const char  *map;               // --map FILE: compiler debug file to merge into -g
 }
 options_t;
 
@@ -79,6 +81,10 @@ static void  usage (FILE *fp)
         "  -g, --debug[=MODE]   also write FILE.debug (CSV: address,file,line[,label]) next to the\n"
         "                       output file; MODE is program (default), vbin or v32, as in the\n"
         "                       official assembler's \"-g MODE\"\n"
+        "  -r, --relocs=FILE    write the list of words that hold an address (label references,\n"
+        "                       code and data) as 'index,value' lines; for relocatable modules\n"
+        "      --map=FILE       with -g: FILE is v32cc's debug file (asmfile,asmline,cfile,cline[,func]);\n"
+        "                       the .debug file then names the C file and line of each instruction\n"
         "  -T, --text           print a human-readable listing (instruction encodings) instead\n"
         "                       of writing a VBIN; addresses start at 0 unless -b/-c/-O is given\n"
         "  -n, --none           same as --text with no base address\n"
@@ -437,6 +443,8 @@ int  main (int  argc, char **argv)
         { "no-warnings", no_argument,    0, 'w' },
         { "include",  required_argument, 0, 'I' },
         { "standard", no_argument,       0, 1001 },
+        { "relocs",   required_argument, 0, 'r' },
+        { "map",      required_argument, 0, 1002 },
         { "binary",   no_argument,       0, 'B' },
         { "debug",    optional_argument, 0, 'g' },
         { "origin",   required_argument, 0, 'O' },
@@ -473,7 +481,7 @@ int  main (int  argc, char **argv)
         return (2);
     }
 
-    while ((c = getopt_long (argc, argv, "bcnTBgwO:o:D:U:I:EPsvhV", long_options, NULL)) != -1)
+    while ((c = getopt_long (argc, argv, "bcnTBgwO:o:r:D:U:I:EPsvhV", long_options, NULL)) != -1)
     {
         switch (c)
         {
@@ -485,6 +493,8 @@ int  main (int  argc, char **argv)
             case 'w':  opt.no_warn = 1;       break;
             case 'I':  incdirs[nincdirs++] = optarg;  break;
             case 1001: opt.standard = 1;      break;
+            case 1002: opt.map     = optarg;  break;
+            case 'r':  opt.relocs  = optarg;  break;
             case 'g':
             {
                 const char  *m = optarg;
@@ -616,6 +626,18 @@ int  main (int  argc, char **argv)
     {
         fprintf (stderr, "v32as: -g needs binary output to a file (give -o FILE or a single input file; "
                          "the debug info goes to FILE.debug)\n");
+        return (2);
+    }
+
+    if (opt.map && !opt.debug)
+    {
+        fprintf (stderr, "v32as: --map needs -g\n");
+        return (2);
+    }
+
+    if (opt.relocs && (!opt.binary || opt.output == NULL))
+    {
+        fprintf (stderr, "v32as: -r needs binary output to a file (give -o FILE or a single input file)\n");
         return (2);
     }
 
@@ -823,11 +845,24 @@ int  main (int  argc, char **argv)
     {
         char   *path = malloc (strlen (opt.output) + 8);
         FILE   *dfp;
+        FILE   *mfp = NULL;
 
         sprintf (path, "%s.debug", opt.output);
         dfp = fopen (path, "w");
 
-        if (dfp == NULL || asm_write_debug (&a, dfp, opt.debug_mode) != 0)
+        if (opt.map != NULL && (mfp = fopen (opt.map, "r")) == NULL)
+        {
+            fprintf (stderr, "v32as: cannot read '%s': %s\n", opt.map, strerror (errno));
+            rc = 2;
+        }
+
+        if (rc != 0)
+        {
+            /* nothing to write */
+        }
+        else if (dfp == NULL
+                 || (mfp != NULL ? asm_write_debug_map (&a, dfp, opt.debug_mode, mfp, opt.map)
+                                 : asm_write_debug (&a, dfp, opt.debug_mode)) != 0)
         {
             fprintf (stderr, "v32as: cannot write '%s': %s\n", path, strerror (errno));
             rc = 2;
@@ -838,7 +873,28 @@ int  main (int  argc, char **argv)
             fclose (dfp);
         }
 
+        if (mfp != NULL)
+        {
+            fclose (mfp);
+        }
+
         free (path);
+    }
+
+    if (rc == 0 && opt.binary && opt.relocs)
+    {
+        FILE  *rfp = fopen (opt.relocs, "w");
+
+        if (rfp == NULL || asm_write_relocs (&a, rfp) != 0)
+        {
+            fprintf (stderr, "v32as: cannot write '%s': %s\n", opt.relocs, strerror (errno));
+            rc = 2;
+        }
+
+        if (rfp != NULL)
+        {
+            fclose (rfp);
+        }
     }
 
     if (out != stdout)

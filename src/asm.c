@@ -164,11 +164,14 @@ void  asm_free (asm_t *a)
     free (a -> tab);
     free (a -> words);
     free (a -> fix);
+    free (a -> rel);
     free (a -> rec);
 
     a -> tab   = NULL;
     a -> words = NULL;
     a -> fix   = NULL;
+    a -> rel   = NULL;
+    a -> nrel  = a -> relcap = 0;
     a -> rec   = NULL;
     a -> first = a -> last = NULL;
 }
@@ -353,9 +356,20 @@ static size_t  emit_imm (asm_t *a, const loc_t *loc, imm_t imm)
 {
     size_t  index;
 
+    if (imm.kind == IMM_SYM || imm.reloc)
+    {
+        if (a -> nrel == a -> relcap)
+        {
+            a -> relcap = a -> relcap ? a -> relcap * 2 : 256;
+            a -> rel    = xrealloc (a -> rel, a -> relcap * sizeof (uint32_t));
+        }
+
+        a -> rel[a -> nrel++] = (uint32_t) a -> nwords;
+    }
+
     if (imm.kind == IMM_SYM)
     {
-        index = emit_word (a, imm.sym -> defined ? imm.sym -> addr : 0);
+        index = emit_word (a, imm.sym -> defined ? imm.sym -> addr + imm.addend : 0);
 
         if (!imm.sym -> defined)
         {
@@ -367,6 +381,7 @@ static size_t  emit_imm (asm_t *a, const loc_t *loc, imm_t imm)
 
             a -> fix[a -> nfix].word = (uint32_t) index;
             a -> fix[a -> nfix].sym  = imm.sym;
+            a -> fix[a -> nfix].addend = imm.addend;
             {
                 const char  *file;
                 int          line;
@@ -419,6 +434,26 @@ imm_t  imm_from_sym (sym_t *s)
 
     v.kind = IMM_SYM;
     v.sym  = s;
+
+    return (v);
+}
+
+imm_t  imm_label_offset (asm_t *a, const loc_t *loc, sym_t *s, num_t off)
+{
+    imm_t  v = imm_from_sym (s);
+
+    if (a -> standard)
+    {
+        asm_error (a, loc, "'label +/- integer' is not part of the official assembler's language");
+    }
+    else if (off.is_float)
+    {
+        asm_error (a, loc, "the offset added to a label must be an integer, not a float");
+    }
+    else
+    {
+        v.addend = off.bits;
+    }
 
     return (v);
 }
@@ -699,7 +734,19 @@ void  asm_inst (asm_t *a, const loc_t *loc, unsigned opcode, unsigned r1, unsign
 
 static imm_t  imm_bits (uint32_t v)
 {
-    imm_t  i = { IMM_BITS, v, NULL, 0 };
+    imm_t  i = NOIMM;
+
+    i.kind  = IMM_BITS;
+    i.bits  = v;
+    return i;
+}
+
+// a value computed from the instruction's own address: it moves with the code
+static imm_t  imm_reloc (uint32_t v)
+{
+    imm_t  i = imm_bits (v);
+
+    i.reloc = 1;
     return i;
 }
 
@@ -717,7 +764,7 @@ void  asm_mov_sysreg_read (asm_t *a, const loc_t *loc, unsigned rn, unsigned sys
         {
             asm_warn (a, loc, "IP is relative to address 0 here; use --bios or --cart for real addresses");
         }
-        asm_inst (a, loc, OP_MOV, rn, 0, 0, 0, imm_bits (here (a) + 2));
+        asm_inst (a, loc, OP_MOV, rn, 0, 0, 0, imm_reloc (here (a) + 2));
         return;
     }
 
@@ -740,7 +787,7 @@ void  asm_mov_sysreg_write (asm_t *a, const loc_t *loc, unsigned sys, unsigned r
                           "cartridge ROM is read-only", sys == SYS_IR ? "IR" : "IV");
     }
 
-    asm_inst (a, loc, OP_MOV, 0, rn, 5, 0, imm_bits (here (a) + (sys == SYS_IR ? 2 : 3)));
+    asm_inst (a, loc, OP_MOV, 0, rn, 5, 0, imm_reloc (here (a) + (sys == SYS_IR ? 2 : 3)));
 }
 
 void  asm_mov_ip_value (asm_t *a, const loc_t *loc, imm_t target)
@@ -1046,7 +1093,7 @@ int  asm_finish (asm_t *a)
 
         if (f -> sym -> defined)
         {
-            a -> words[f -> word] = f -> sym -> addr;
+            a -> words[f -> word] = f -> sym -> addr + f -> addend;
         }
         else
         {
@@ -1224,4 +1271,208 @@ int  asm_write_debug (asm_t *a, FILE *fp, dbgmode_t mode)
     free (v);
 
     return (ferror (fp) ? -1 : 0);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// Relocation list (-r): every word that holds an address, as "index,address" lines.
+//
+//     index    word index in the program (code and data), 0 is the first word
+//     address  the value the word holds in this assembly (a label's address plus
+//              any offset, or the IP-relative value), 0x%08X
+//
+// The words listed are exactly those that were resolved from a label (or computed from
+// the instruction's own address), never numbers that merely look like addresses; a loader
+// that moves the program adds the difference between the new and the assembled base.
+//
+static int  u32_cmp (const void *x, const void *y)
+{
+    uint32_t  p = *(const uint32_t *) x, q = *(const uint32_t *) y;
+
+    return (p < q ? -1 : (p > q ? 1 : 0));
+}
+
+int  asm_write_relocs (asm_t *a, FILE *fp)
+{
+    size_t  i;
+
+    qsort (a -> rel, a -> nrel, sizeof (uint32_t), u32_cmp);
+
+    for (i = 0; i < a -> nrel; i++)
+    {
+        if (i > 0 && a -> rel[i] == a -> rel[i - 1])
+        {
+            continue;
+        }
+
+        if (a -> rel[i] < a -> nwords)
+        {
+            fprintf (fp, "%u,0x%08X\n", a -> rel[i], a -> words[a -> rel[i]]);
+        }
+    }
+
+    return (ferror (fp) ? -1 : 0);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// Debug file merged with a compiler's file (--map): v32cc -g writes
+//
+//     asmfile,asmline,cfile,cline[,function]
+//
+// and each instruction of the assembler's own debug file is looked up there by its
+// (file,line). The output has the same layout as -g (ADDRESS,file,line[,label]) but names
+// the C file and line, with the function name as the label when the map gives one.
+// Instructions whose assembly line is not in the map are left out.
+//
+typedef struct
+{
+    char  *afile;
+    int    aline;
+    char  *cfile;
+    int    cline;
+    char  *func;
+}
+mapent_t;
+
+static int  mapent_cmp (const void *x, const void *y)
+{
+    const mapent_t  *p = x, *q = y;
+    int              c = strcmp (p -> afile, q -> afile);
+
+    if (c != 0)
+    {
+        return (c);
+    }
+
+    return (p -> aline < q -> aline ? -1 : (p -> aline > q -> aline ? 1 : 0));
+}
+
+static char  *norm_path (const char *path)
+{
+    char        *out = xrealloc (NULL, strlen (path) + 1), *q = out;
+    const char  *p   = path;
+    int          prev_slash = 0;
+
+    if (p[0] == '.' && p[1] == '/')
+    {
+        p += 2;
+    }
+
+    for (; *p; p++)
+    {
+        char  c = (*p == '\\') ? '/' : *p;
+
+        if (c == '/' && prev_slash)
+        {
+            continue;
+        }
+
+        prev_slash = (c == '/');
+        *q++       = c;
+    }
+
+    *q = 0;
+
+    return (out);
+}
+
+int  asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode, FILE *cmap, const char *cmap_name)
+{
+    mapent_t  *m = NULL;
+    size_t     nm = 0, capm = 0, i;
+    char       line[4096];
+    int        rc = 0;
+    uint32_t   base_off = (mode == DBG_V32) ? 0x8C : (mode == DBG_VBIN ? 0x0C : 0);
+    uint32_t   unit     = (mode == DBG_PROGRAM) ? 1 : 4;
+
+    while (fgets (line, sizeof (line), cmap) != NULL)
+    {
+        char  *f[5] = { 0 }, *p = line;
+        int    nf = 0;
+        char  *end;
+
+        line[strcspn (line, "\r\n")] = 0;
+
+        if (line[0] == 0 || line[0] == '#')
+        {
+            continue;
+        }
+
+        f[nf++] = p;
+
+        while (nf < 5 && (p = strchr (p, ',')) != NULL)
+        {
+            *p++    = 0;
+            f[nf++] = p;
+        }
+
+        if (nf < 4)
+        {
+            fprintf (stderr, "v32as: %s: malformed line (expected asmfile,asmline,cfile,cline[,function])\n",
+                     cmap_name);
+            rc = -1;
+            continue;
+        }
+
+        if (nm == capm)
+        {
+            capm = capm ? capm * 2 : 256;
+            m    = xrealloc (m, capm * sizeof (mapent_t));
+        }
+
+        m[nm].aline = (int) strtol (f[1], &end, 10);
+
+        if (end == f[1])
+        {
+            continue;                   // a header line
+        }
+
+        m[nm].afile = norm_path (f[0]);
+        m[nm].cfile = norm_path (f[2]);
+        m[nm].cline = (int) strtol (f[3], NULL, 10);
+        m[nm].func  = nf > 4 && f[4][0] ? xstrndup (f[4], strlen (f[4])) : NULL;
+        nm++;
+    }
+
+    qsort (m, nm, sizeof (mapent_t), mapent_cmp);
+
+    for (i = 0; i < a -> nrec; i++)
+    {
+        const dbgrec_t  *r = &a -> rec[i];
+        mapent_t         key;
+        mapent_t        *hit;
+        char            *file = norm_path (r -> file);
+
+        key.afile = file;
+        key.aline = r -> line;
+        hit       = bsearch (&key, m, nm, sizeof (mapent_t), mapent_cmp);
+
+        if (hit != NULL)
+        {
+            fprintf (fp, "0x%08X,%s,%d", mode == DBG_PROGRAM ? a -> base + r -> word
+                                                             : base_off + r -> word * unit,
+                     hit -> cfile, hit -> cline);
+
+            if (hit -> func != NULL)
+            {
+                fprintf (fp, ",%s", hit -> func);
+            }
+
+            fputc ('\n', fp);
+        }
+
+        free (file);
+    }
+
+    for (i = 0; i < nm; i++)
+    {
+        free (m[i].afile);
+        free (m[i].cfile);
+        free (m[i].func);
+    }
+
+    free (m);
+
+    return (rc != 0 || ferror (fp) ? -1 : 0);
 }
