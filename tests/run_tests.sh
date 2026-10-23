@@ -101,7 +101,7 @@ fail=$((fail + $(grep -c '^FAIL' "$T/ldout")))
 printf 'extern _x\n_x:\n' > "$T/ex.asm"
 "$BIN" -C -o "$T/ex.v32ob" "$T/ex.asm" 2>"$T/err" && bad "extern label defined" || { grep -q "declared extern" "$T/err" && ok || bad "extern message"; }
 printf 'global _x\n' > "$T/gl.asm"
-"$BIN" -C -o "$T/gl.v32ob" "$T/gl.asm" 2>"$T/err" && bad "global never defined" || ok
+"$BIN" -C -o "$T/gl.v32ob" "$T/gl.asm" 2>"$T/err" && bad "global never defined" || { grep -q "gl.asm:1:8: error: global label" "$T/err" && ok || bad "global error location"; }
 "$BIN" --standard -C -o "$T/x.v32ob" "$T/lo.asm" 2>/dev/null && bad "--object under --standard" || ok
 printf 'global _x\n_x: hlt\n' > "$T/gs.asm"
 "$BIN" --standard --none "$T/gs.asm" >/dev/null 2>&1 && bad "global under --standard" || ok

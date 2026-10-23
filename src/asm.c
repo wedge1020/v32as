@@ -259,6 +259,7 @@ sym_t  *asm_sym_intern (asm_t *a, const char *name, size_t n)
     s -> defined   = 0;
     s -> global    = 0;
     s -> external  = 0;
+    s -> gfile     = NULL;
     s -> order     = NULL;
     s -> next      = a -> tab[slot];
     a -> tab[slot] = s;
@@ -1123,7 +1124,10 @@ int  asm_finish (asm_t *a)
     {
         if (s -> global && !s -> defined)
         {
-            asm_error (a, &(loc_t) { 0, 0, 0, 0 }, "global label '%s' is never defined", s -> name);
+            loc_t  where = { s -> gline, s -> gcol, s -> gline, s -> gcol };
+
+            a -> cur_file = s -> gfile;
+            asm_error (a, &where, "global label '%s' is never defined", s -> name);
         }
     }
 
@@ -1524,9 +1528,17 @@ void  asm_sym_declare (asm_t *a, const loc_t *loc, sym_t *s, int external)
     {
         s -> external = 1;
     }
-    else
+    else if (!s -> global)
     {
+        const char  *file;
+        int          line, expanded;
+
+        asm_resolve (a, loc -> first_line, &file, &line, &expanded);
+
         s -> global = 1;
+        s -> gfile  = file;
+        s -> gline  = line;
+        s -> gcol   = expanded ? 0 : loc -> first_column;
     }
 }
 

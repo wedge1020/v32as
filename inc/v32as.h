@@ -105,6 +105,9 @@ typedef struct sym
     int           defined;
     int           global;           // 'global': visible to the linker
     int           external;         // 'extern': defined in another object
+    const char   *gfile;            // where 'global' declared it (for diagnostics)
+    int           gline;
+    int           gcol;
     struct sym   *next;             // hash chain
     struct sym   *order;            // definition/reference order list
 }
