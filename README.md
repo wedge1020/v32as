@@ -6,7 +6,7 @@ lexer  is flex,  the parser  is bison,  and symbols/fixups  live in  hash
 tables instead of bash arrays and `bc`.
 
 ```
-    make          # builds bin/v32as  (needs flex, bison, cc; readline optional)
+    make          # builds bin/v32as and bin/v32ld  (needs flex, bison, cc; readline optional)
     make test     # differential/golden tests (including .debug files) (sh + od + cmp only)
     make install  # copies to ~/bin
     make archive  # ../v32as-project.zip, without build products
@@ -38,6 +38,13 @@ a VBIN for a cartridge. (Reading STDIN, the output goes to STDOUT.)
 - no files and a terminal on stdin starts the REPL: `.help .labels .dump .reset .quit`
 - `-` reads stdin; the legacy bare words (`bios`, `cart`, ...) still work
 - Preprocessor options: `-D`, `-U`, `-I`, `-E`, `-P` (see below).
+
+### Objects and the linker
+
+`v32as -C x.asm` writes a relocatable object `x.v32ob`; `v32ld a.v32ob b.v32ob -o prog.vbin [-b|-c|-O ADDR] [-g] [-r FILE]`
+links them. `global _name` / `extern _name` (plain names, no `%`) say which labels are shared. Linking
+equals assembling the sources as one file; the objects carry the debug records, so `v32ld -g` writes the
+same `.debug` file. Format and details: `docs/OBJECT.md`.
 
 ### Label plus constant
 

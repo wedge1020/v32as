@@ -81,7 +81,9 @@ typedef enum
     DIR_STRING,                     // one character per word, zero-terminated
     DIR_ZSTRING,                    // byte-packed (4 per word, little-endian), zero-terminated
     DIR_POINTER,
-    DIR_DATAFILE
+    DIR_DATAFILE,
+    DIR_GLOBAL,
+    DIR_EXTERN
 }
 directive_t;
 
@@ -101,6 +103,8 @@ typedef struct sym
     char         *name;
     uint32_t      addr;             // absolute address (valid once defined)
     int           defined;
+    int           global;           // 'global': visible to the linker
+    int           external;         // 'extern': defined in another object
     struct sym   *next;             // hash chain
     struct sym   *order;            // definition/reference order list
 }
@@ -151,6 +155,14 @@ dbgrec_t;
 
 typedef enum { DBG_PROGRAM, DBG_VBIN, DBG_V32 } dbgmode_t;
 
+typedef struct
+{
+    uint32_t     word;              // index of the word in the output
+    sym_t       *sym;               // the label it refers to (NULL: relative to the load address)
+    uint32_t     addend;            // label offset; for sym == NULL the value itself
+}
+rel_t;
+
 typedef struct asm_ctx
 {
     // configuration
@@ -178,8 +190,8 @@ typedef struct asm_ctx
     size_t       nfix;
     size_t       fixcap;
 
-    // words holding an address (label references, IP-relative values), for -r
-    uint32_t    *rel;
+    // words holding an address (label references, IP-relative values), for -r and objects
+    rel_t       *rel;
     size_t       nrel;
     size_t       relcap;
 
@@ -204,6 +216,7 @@ typedef struct asm_ctx
     const srcloc_t  *map;
     size_t           nmap;
 
+    int          object;            // -C: write a relocatable object (v32ob), base 0
     int          standard;          // strict official-assembler language (--standard)
     int          no_warn;           // -w
 }
@@ -233,6 +246,8 @@ void    asm_resolve         (const asm_t *a, int line, const char **file, int *s
 int     asm_finish          (asm_t *a);
 int     asm_write_vbin      (asm_t *a, FILE *fp);
 int     asm_write_debug     (asm_t *a, FILE *fp, dbgmode_t mode);
+int     asm_write_object    (asm_t *a, FILE *fp);
+void    asm_sym_declare     (asm_t *a, const loc_t *loc, sym_t *s, int external);
 int     asm_write_relocs    (asm_t *a, FILE *fp);
 int     asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode, FILE *cmap, const char *cmap_name);
 void    asm_print_labels    (asm_t *a, FILE *fp);

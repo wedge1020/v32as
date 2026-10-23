@@ -280,7 +280,9 @@ _[A-Za-z0-9_]+":"       {
                             // language extensions the official assembler does not have
                             if (k != NULL && yyextra -> standard
                                 && (k -> kind == KW_SYSREG
-                                    || (k -> kind == KW_DIRECTIVE && k -> cls == DIR_ZSTRING)))
+                                    || (k -> kind == KW_DIRECTIVE
+                                        && (k -> cls == DIR_ZSTRING || k -> cls == DIR_GLOBAL
+                                            || k -> cls == DIR_EXTERN))))
                             {
                                 k = NULL;
                             }
@@ -315,6 +317,8 @@ _[A-Za-z0-9_]+":"       {
                                             case DIR_STRING:    return (T_DIR_STRING);
                                             case DIR_ZSTRING:   return (T_DIR_ZSTRING);
                                             case DIR_POINTER:   return (T_DIR_POINTER);
+                                            case DIR_GLOBAL:    return (T_DIR_GLOBAL);
+                                            case DIR_EXTERN:    return (T_DIR_EXTERN);
                                             default:            return (T_DIR_DATAFILE);
                                         }
 

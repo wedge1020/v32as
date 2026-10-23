@@ -257,6 +257,8 @@ sym_t  *asm_sym_intern (asm_t *a, const char *name, size_t n)
     s -> name      = xstrndup (name, n);
     s -> addr      = 0;
     s -> defined   = 0;
+    s -> global    = 0;
+    s -> external  = 0;
     s -> order     = NULL;
     s -> next      = a -> tab[slot];
     a -> tab[slot] = s;
@@ -289,6 +291,12 @@ void  asm_label_define (asm_t *a, sym_t *s, const loc_t *loc)
     if (s -> defined)
     {
         asm_error (a, loc, "duplicate label '%s'", s -> name);
+        return;
+    }
+
+    if (s -> external)
+    {
+        asm_error (a, loc, "label '%s' is declared extern: it is defined in another object", s -> name);
         return;
     }
 
@@ -361,10 +369,13 @@ static size_t  emit_imm (asm_t *a, const loc_t *loc, imm_t imm)
         if (a -> nrel == a -> relcap)
         {
             a -> relcap = a -> relcap ? a -> relcap * 2 : 256;
-            a -> rel    = xrealloc (a -> rel, a -> relcap * sizeof (uint32_t));
+            a -> rel    = xrealloc (a -> rel, a -> relcap * sizeof (rel_t));
         }
 
-        a -> rel[a -> nrel++] = (uint32_t) a -> nwords;
+        a -> rel[a -> nrel].word   = (uint32_t) a -> nwords;
+        a -> rel[a -> nrel].sym    = imm.kind == IMM_SYM ? imm.sym : NULL;
+        a -> rel[a -> nrel].addend = imm.kind == IMM_SYM ? imm.addend : imm.bits;
+        a -> nrel++;
     }
 
     if (imm.kind == IMM_SYM)
@@ -1095,6 +1106,10 @@ int  asm_finish (asm_t *a)
         {
             a -> words[f -> word] = f -> sym -> addr + f -> addend;
         }
+        else if (f -> sym -> external && a -> object)
+        {
+            a -> words[f -> word] = f -> addend;        // the linker adds the symbol's address
+        }
         else
         {
             a -> cur_file = f -> file;
@@ -1103,6 +1118,14 @@ int  asm_finish (asm_t *a)
     }
 
     a -> nfix = 0;
+
+    for (sym_t *s = a -> first; s != NULL; s = s -> order)
+    {
+        if (s -> global && !s -> defined)
+        {
+            asm_error (a, &(loc_t) { 0, 0, 0, 0 }, "global label '%s' is never defined", s -> name);
+        }
+    }
 
     return ((int) a -> errors);
 }
@@ -1285,9 +1308,9 @@ int  asm_write_debug (asm_t *a, FILE *fp, dbgmode_t mode)
 // the instruction's own address), never numbers that merely look like addresses; a loader
 // that moves the program adds the difference between the new and the assembled base.
 //
-static int  u32_cmp (const void *x, const void *y)
+static int  rel_cmp (const void *x, const void *y)
 {
-    uint32_t  p = *(const uint32_t *) x, q = *(const uint32_t *) y;
+    uint32_t  p = ((const rel_t *) x) -> word, q = ((const rel_t *) y) -> word;
 
     return (p < q ? -1 : (p > q ? 1 : 0));
 }
@@ -1296,18 +1319,18 @@ int  asm_write_relocs (asm_t *a, FILE *fp)
 {
     size_t  i;
 
-    qsort (a -> rel, a -> nrel, sizeof (uint32_t), u32_cmp);
+    qsort (a -> rel, a -> nrel, sizeof (rel_t), rel_cmp);
 
     for (i = 0; i < a -> nrel; i++)
     {
-        if (i > 0 && a -> rel[i] == a -> rel[i - 1])
+        if (i > 0 && a -> rel[i].word == a -> rel[i - 1].word)
         {
             continue;
         }
 
-        if (a -> rel[i] < a -> nwords)
+        if (a -> rel[i].word < a -> nwords)
         {
-            fprintf (fp, "%u,0x%08X\n", a -> rel[i], a -> words[a -> rel[i]]);
+            fprintf (fp, "%u,0x%08X\n", a -> rel[i].word, a -> words[a -> rel[i].word]);
         }
     }
 
@@ -1475,4 +1498,187 @@ int  asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode, FILE *cmap, const 
     free (m);
 
     return (rc != 0 || ferror (fp) ? -1 : 0);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// 'global' and 'extern'
+//
+void  asm_sym_declare (asm_t *a, const loc_t *loc, sym_t *s, int external)
+{
+    a -> line_active = 1;
+
+    if (external && s -> defined)
+    {
+        asm_error (a, loc, "label '%s' is defined here, it cannot be extern", s -> name);
+    }
+    else if (external && s -> global)
+    {
+        asm_error (a, loc, "label '%s' cannot be both global and extern", s -> name);
+    }
+    else if (!external && s -> external)
+    {
+        asm_error (a, loc, "label '%s' cannot be both global and extern", s -> name);
+    }
+    else if (external)
+    {
+        s -> external = 1;
+    }
+    else
+    {
+        s -> global = 1;
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// Relocatable object (-C): see docs/OBJECT.md. All numbers are 32-bit little endian.
+//
+typedef struct
+{
+    unsigned char  *p;
+    size_t          n;
+    size_t          cap;
+}
+buf_t;
+
+static void  buf_put (buf_t *b, const void *data, size_t n)
+{
+    if (b -> n + n > b -> cap)
+    {
+        b -> cap = (b -> n + n) * 2 + 256;
+        b -> p   = xrealloc (b -> p, b -> cap);
+    }
+
+    memcpy (b -> p + b -> n, data, n);
+    b -> n += n;
+}
+
+static void  buf_u32 (buf_t *b, uint32_t v)
+{
+    unsigned char  c[4] = { (unsigned char) v, (unsigned char) (v >> 8),
+                            (unsigned char) (v >> 16), (unsigned char) (v >> 24) };
+
+    buf_put (b, c, 4);
+}
+
+// string table: returns the offset of a new copy of s
+static uint32_t  str_add (buf_t *t, const char *s)
+{
+    uint32_t  off = (uint32_t) t -> n;
+
+    buf_put (t, s, strlen (s) + 1);
+
+    return (off);
+}
+
+int  asm_write_object (asm_t *a, FILE *fp)
+{
+    buf_t         out = { 0 }, str = { 0 }, body = { 0 };
+    const char  **files = NULL;
+    uint32_t     *fileoff = NULL;
+    size_t        nfiles = 0, nsyms = 0, i, j;
+    uint32_t      nrels = 0;
+    sym_t        *s;
+    int           ok;
+
+    for (s = a -> first; s != NULL; s = s -> order)
+    {
+        nsyms++;
+    }
+
+    // symbol index = position in the definition/reference order
+    sym_t  **tab = xrealloc (NULL, (nsyms + 1) * sizeof (sym_t *));
+
+    for (i = 0, s = a -> first; s != NULL; s = s -> order)
+    {
+        tab[i++] = s;
+    }
+
+    for (i = 0; i < a -> nwords; i++)
+    {
+        buf_u32 (&body, a -> words[i]);
+    }
+
+    for (i = 0; i < nsyms; i++)
+    {
+        uint32_t  flags = (tab[i] -> defined ? 1 : 0) | (tab[i] -> global ? 2 : 0)
+                        | (tab[i] -> external ? 4 : 0);
+
+        buf_u32 (&body, str_add (&str, tab[i] -> name));
+        buf_u32 (&body, tab[i] -> defined ? tab[i] -> addr : 0);
+        buf_u32 (&body, flags);
+    }
+
+    // relocations: one per word that holds an address, in word order
+    qsort (a -> rel, a -> nrel, sizeof (rel_t), rel_cmp);
+
+    for (i = 0; i < a -> nrel; i++)
+    {
+        uint32_t  idx = 0xFFFFFFFFu;
+
+        if ((i > 0 && a -> rel[i].word == a -> rel[i - 1].word) || a -> rel[i].word >= a -> nwords)
+        {
+            continue;
+        }
+
+        if (a -> rel[i].sym != NULL)
+        {
+            for (j = 0; j < nsyms; j++)
+            {
+                if (tab[j] == a -> rel[i].sym)
+                {
+                    idx = (uint32_t) j;
+                    break;
+                }
+            }
+        }
+
+        buf_u32 (&body, a -> rel[i].word);
+        buf_u32 (&body, idx);
+        buf_u32 (&body, a -> rel[i].addend);
+        nrels++;
+    }
+
+    // debug records; file names are stored once each
+    for (i = 0; i < a -> nrec; i++)
+    {
+        for (j = 0; j < nfiles && strcmp (files[j], a -> rec[i].file) != 0; j++)
+        {
+        }
+
+        if (j == nfiles)
+        {
+            files   = xrealloc (files, (nfiles + 1) * sizeof (char *));
+            fileoff = xrealloc (fileoff, (nfiles + 1) * sizeof (uint32_t));
+            files[nfiles]   = a -> rec[i].file;
+            fileoff[nfiles] = str_add (&str, a -> rec[i].file);
+            nfiles++;
+        }
+
+        buf_u32 (&body, a -> rec[i].word);
+        buf_u32 (&body, fileoff[j]);
+        buf_u32 (&body, (uint32_t) a -> rec[i].line);
+    }
+
+    buf_put (&out, "V32-VOBJ", 8);
+    buf_u32 (&out, 1);                                  // format version
+    buf_u32 (&out, (uint32_t) a -> nwords);
+    buf_u32 (&out, (uint32_t) nsyms);
+    buf_u32 (&out, nrels);
+    buf_u32 (&out, (uint32_t) a -> nrec);
+    buf_u32 (&out, (uint32_t) str.n);
+    buf_put (&out, body.p, body.n);
+    buf_put (&out, str.p, str.n);
+
+    ok = (fwrite (out.p, 1, out.n, fp) == out.n);
+
+    free (out.p);
+    free (str.p);
+    free (body.p);
+    free (files);
+    free (fileoff);
+    free (tab);
+
+    return (ok ? 0 : -1);
 }

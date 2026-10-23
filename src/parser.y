@@ -76,6 +76,8 @@ typedef void  *yyscan_t;
 %token T_DIR_ZSTRING         "'zstring'"
 %token T_DIR_POINTER         "'pointer'"
 %token T_DIR_DATAFILE        "'datafile'"
+%token T_DIR_GLOBAL          "'global'"
+%token T_DIR_EXTERN          "'extern'"
 
 %token <op> T_OP_NONE        "instruction without operands"
 %token <op> T_OP_R           "single-register instruction"
@@ -233,6 +235,18 @@ directive
         { asm_data_begin (ctx); asm_data_zstring (ctx, $2); asm_data_end (ctx); }
     | T_DIR_DATAFILE T_STRING
         { asm_data_begin (ctx); asm_data_file (ctx, &@2, $2); asm_data_end (ctx); }
+    | T_DIR_GLOBAL global_list
+    | T_DIR_EXTERN extern_list
+    ;
+
+global_list
+    : T_LABEL                        { asm_sym_declare (ctx, &@1, $1, 0); }
+    | global_list T_COMMA T_LABEL    { asm_sym_declare (ctx, &@3, $3, 0); }
+    ;
+
+extern_list
+    : T_LABEL                        { asm_sym_declare (ctx, &@1, $1, 1); }
+    | extern_list T_COMMA T_LABEL    { asm_sym_declare (ctx, &@3, $3, 1); }
     ;
 
 integer_list

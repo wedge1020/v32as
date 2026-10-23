@@ -200,6 +200,8 @@ static void  kw_init (void)
     kw_add ("zstring",  KW_DIRECTIVE, DIR_ZSTRING,  0);
     kw_add ("pointer",  KW_DIRECTIVE, DIR_POINTER,  0);
     kw_add ("datafile", KW_DIRECTIVE, DIR_DATAFILE, 0);
+    kw_add ("global",   KW_DIRECTIVE, DIR_GLOBAL,   0);
+    kw_add ("extern",   KW_DIRECTIVE, DIR_EXTERN,   0);
 
     for (i = 0; i < 11; i++)
     {

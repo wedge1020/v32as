@@ -3,6 +3,8 @@
 BIN=${1:-../bin/v32asc}
 cd "$(dirname "$0")" || exit 1
 case $BIN in /*) ;; *) BIN=$OLDPWD/$BIN ;; esac
+LD=${2:-$(dirname "$BIN")/v32ld}
+case $LD in /*) ;; *) LD=$OLDPWD/$LD ;; esac
 T=${TMPDIR:-/tmp}/v32asc_test.$$; mkdir -p "$T"; trap 'rm -rf "$T"' EXIT
 pass=0; fail=0
 ok()  { pass=$((pass+1)); }
@@ -77,6 +79,32 @@ printf '  mov R0, _t+2\n  mov R1, [_t-1]\n  pointer _t+1\n_t: hlt\n' > "$T/lo.as
 cmp -s "$T/r.rel" map/labeloff.rel && ok || bad "-r relocation list differs"
 ( cd map && "$BIN" --cart -w -g --map labeloff.map -o "$T/m.vbin" labeloff.asm ) 2>/dev/null
 cmp -s "$T/m.vbin.debug" map/labeloff.debug && ok || bad "--map debug file differs"
+# objects and the linker: linking must equal assembling the same code as one file
+( cd link
+  "$BIN" -C -o "$T/m1.v32ob" m1.asm && "$BIN" -C -o "$T/m2.v32ob" m2.asm \
+    || { echo "FAIL: -C (assemble)"; exit 1; }
+  for mode in "-c" "-b" "-O 0x1000"; do
+    "$LD" $mode -o "$T/l.vbin" "$T/m1.v32ob" "$T/m2.v32ob" 2>/dev/null \
+      && "$BIN" $mode -o "$T/a.vbin" all.asm 2>/dev/null \
+      && cmp -s "$T/l.vbin" "$T/a.vbin" && echo "ok" || echo "FAIL: link $mode differs from one-file assembly"
+  done
+  "$LD" -g -o "$T/g.vbin" "$T/m1.v32ob" "$T/m2.v32ob" 2>/dev/null
+  cmp -s "$T/g.vbin.debug" link.debug && echo ok || echo "FAIL: linked .debug differs"
+  "$LD" -o "$T/x.vbin" "$T/m1.v32ob" 2>"$T/err" && echo "FAIL: undefined symbol accepted" \
+    || { grep -q "undefined symbol '_table'" "$T/err" && echo ok || echo "FAIL: undefined symbol message"; }
+  "$LD" -o "$T/x.vbin" "$T/m2.v32ob" "$T/m2.v32ob" 2>"$T/err" && echo "FAIL: duplicate symbol accepted" \
+    || { grep -q "defined in both" "$T/err" && echo ok || echo "FAIL: duplicate symbol message"; }
+) > "$T/ldout" 2>&1
+cat "$T/ldout" | grep '^FAIL'
+pass=$((pass + $(grep -c '^ok' "$T/ldout")))
+fail=$((fail + $(grep -c '^FAIL' "$T/ldout")))
+printf 'extern _x\n_x:\n' > "$T/ex.asm"
+"$BIN" -C -o "$T/ex.v32ob" "$T/ex.asm" 2>"$T/err" && bad "extern label defined" || { grep -q "declared extern" "$T/err" && ok || bad "extern message"; }
+printf 'global _x\n' > "$T/gl.asm"
+"$BIN" -C -o "$T/gl.v32ob" "$T/gl.asm" 2>"$T/err" && bad "global never defined" || ok
+"$BIN" --standard -C -o "$T/x.v32ob" "$T/lo.asm" 2>/dev/null && bad "--object under --standard" || ok
+printf 'global _x\n_x: hlt\n' > "$T/gs.asm"
+"$BIN" --standard --none "$T/gs.asm" >/dev/null 2>&1 && bad "global under --standard" || ok
 # command line: binary output by default, as the official assembler does
 printf '  mov R0, 0100\n  hlt\n' > "$T/x.asm"
 "$BIN" -w "$T/x.asm" 2>"$T/err" && [ -f "$T/x.vbin" ] && ok || bad "default output file x.vbin"

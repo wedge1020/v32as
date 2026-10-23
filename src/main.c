@@ -49,6 +49,7 @@ typedef struct
     int          preprocess;        // -E: stop after preprocessing
     int          no_markers;        // -P: no line markers in -E output
     const char  *output;
+    int          object;            // -C: write a relocatable object
     const char  *relocs;            // -r FILE: list of address-holding words
     const char  *map;               // --map FILE: compiler debug file to merge into -g
 }
@@ -81,6 +82,9 @@ static void  usage (FILE *fp)
         "  -g, --debug[=MODE]   also write FILE.debug (CSV: address,file,line[,label]) next to the\n"
         "                       output file; MODE is program (default), vbin or v32, as in the\n"
         "                       official assembler's \"-g MODE\"\n"
+        "  -C, --object         write a relocatable object (FILE.v32ob) for the linker v32ld; labels\n"
+        "                       are relative to the object, 'global'/'extern' name the symbols shared\n"
+        "                       with other objects, debug info is stored in the object\n"
         "  -r, --relocs=FILE    write the list of words that hold an address (label references,\n"
         "                       code and data) as 'index,value' lines; for relocatable modules\n"
         "      --map=FILE       with -g: FILE is v32cc's debug file (asmfile,asmline,cfile,cline[,func]);\n"
@@ -114,18 +118,18 @@ static void  usage (FILE *fp)
 //
 // FILE.ext -> FILE.vbin, as the official assembler names its output
 //
-static char  *vbin_name (const char *input)
+static char  *vbin_name (const char *input, const char *ext)
 {
     const char  *slash = strrchr (input, '/');
     const char  *base  = slash ? slash + 1 : input;
     const char  *dot   = strrchr (base, '.');
     size_t       stem  = (dot != NULL && dot != base) ? (size_t) (dot - input) : strlen (input);
-    char        *name  = malloc (stem + 6);
+    char        *name  = malloc (stem + strlen (ext) + 1);
 
     if (name != NULL)
     {
         memcpy (name, input, stem);
-        strcpy (name + stem, ".vbin");
+        strcpy (name + stem, ext);
     }
 
     return (name);
@@ -444,6 +448,7 @@ int  main (int  argc, char **argv)
         { "include",  required_argument, 0, 'I' },
         { "standard", no_argument,       0, 1001 },
         { "relocs",   required_argument, 0, 'r' },
+        { "object",   no_argument,       0, 'C' },
         { "map",      required_argument, 0, 1002 },
         { "binary",   no_argument,       0, 'B' },
         { "debug",    optional_argument, 0, 'g' },
@@ -481,7 +486,7 @@ int  main (int  argc, char **argv)
         return (2);
     }
 
-    while ((c = getopt_long (argc, argv, "bcnTBgwO:o:r:D:U:I:EPsvhV", long_options, NULL)) != -1)
+    while ((c = getopt_long (argc, argv, "bcnCTBgwO:o:r:D:U:I:EPsvhV", long_options, NULL)) != -1)
     {
         switch (c)
         {
@@ -495,6 +500,7 @@ int  main (int  argc, char **argv)
             case 1001: opt.standard = 1;      break;
             case 1002: opt.map     = optarg;  break;
             case 'r':  opt.relocs  = optarg;  break;
+            case 'C':  opt.object  = 1;       break;
             case 'g':
             {
                 const char  *m = optarg;
@@ -590,12 +596,36 @@ int  main (int  argc, char **argv)
     }
 
     will_repl  = (nfiles == 0 && isatty (STDIN_FILENO) && !opt.binary_explicit && !opt.preprocess);
+
+    if (opt.object)
+    {
+        if (opt.bios || opt.cart || opt.origin_set || opt.debug || opt.relocs || opt.map
+            || opt.text || opt.none || opt.preprocess || opt.binary_explicit)
+        {
+            fprintf (stderr, "v32as: --object cannot be combined with -b, -c, -O, -g, -r, --map, -T, -n, -E or -B "
+                             "(addresses and debug info are decided by the linker)\n");
+            return (2);
+        }
+
+        if (opt.standard)
+        {
+            fprintf (stderr, "v32as: --object is not part of the official assembler (--standard)\n");
+            return (2);
+        }
+
+        if (will_repl)
+        {
+            fprintf (stderr, "v32as: --object needs an input file\n");
+            return (2);
+        }
+
+    }
     {
         // -E reports the symbols (__CART__ ...) of the build it stands in for
         int  makes_vbin = !(opt.text || opt.none || will_repl);
 
         opt.binary = makes_vbin && !opt.preprocess;
-        opt.cart  |= (makes_vbin && !opt.bios && !opt.origin_set && !opt.cart);
+        opt.cart  |= (makes_vbin && !opt.object && !opt.bios && !opt.origin_set && !opt.cart);
     }
 
     if (opt.origin_set && (opt.bios || opt.cart))
@@ -613,7 +643,8 @@ int  main (int  argc, char **argv)
     // the output file: -o, or the input file's name with a .vbin extension
     if (opt.binary && opt.output == NULL && nfiles == 1 && strcmp (files[0], "-") != 0)
     {
-        derived    = vbin_name (files[0]);
+        derived    = vbin_name (files[0], opt.object ? ".v32ob" : ".vbin");
+
         opt.output = derived;
 
         if (opt.standard && opt.verbose && derived != NULL)
@@ -667,7 +698,8 @@ int  main (int  argc, char **argv)
 
     asm_init (&a);
 
-    a.has_base = (opt.bios || opt.cart || opt.origin_set);
+    a.has_base = (opt.bios || opt.cart || opt.origin_set || opt.object);
+    a.object   = opt.object;
     a.base     = opt.origin_set ? opt.origin : (opt.bios ? BIOS_BASE : (opt.cart ? CART_BASE : 0));
     a.verbose  = opt.verbose && !opt.standard;      // --standard: -v is the official stage log
     a.step     = opt.step && !opt.standard;         // official: -s has no effect
@@ -830,7 +862,7 @@ int  main (int  argc, char **argv)
             rc = 2;
         }
 
-        if (rc == 0 && asm_write_vbin (&a, out) != 0)
+        if (rc == 0 && (opt.object ? asm_write_object (&a, out) : asm_write_vbin (&a, out)) != 0)
         {
             fprintf (stderr, "v32as: error writing the output\n");
             rc = 2;

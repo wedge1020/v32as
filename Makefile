@@ -1,6 +1,6 @@
 # v32as: the C implementation of a Vircon32 assembler (flex + bison)
 #
-#   make            build bin/v32as
+#   make            build bin/v32as and bin/v32ld (the linker)
 #   make debug      build with -g and no optimization
 #   make test       run the regression tests (tests/run_tests.sh)
 #   make install    copy the tool into ~/bin
@@ -38,7 +38,7 @@ endif
 
 HDRS     = $(wildcard $(INC)/*.h)
 
-all: bin/$(PROJ)
+all: bin/$(PROJ) bin/v32ld
 
 debug: override CFLAGS += -g -O0 -DDEBUG
 debug: all
@@ -46,6 +46,10 @@ debug: all
 bin/$(PROJ): $(OBJ)
 	@mkdir -p bin
 	$(CC) -o $@ $(OBJ) $(LIBS)
+
+bin/v32ld: $(SRC)/ld.c
+	@mkdir -p bin
+	$(CC) $(CFLAGS) -o $@ $<
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -69,17 +73,17 @@ $(BUILD)/%.o: $(SRC)/%.c $(BUILD)/parser.tab.h $(HDRS) | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 test: all
-	@sh tests/run_tests.sh bin/$(PROJ)
+	@sh tests/run_tests.sh bin/$(PROJ) bin/v32ld
 
 install: all
 	@mkdir -p /home/$(USER)/bin
-	@cp -av bin/$(PROJ) /home/$(USER)/bin/
+	@cp -av bin/$(PROJ) bin/v32ld /home/$(USER)/bin/
 
 sysinstall: all
-	@cp -av bin/$(PROJ) /usr/local/bin/
+	@cp -av bin/$(PROJ) bin/v32ld /usr/local/bin/
 
 clean:
-	@rm -rvf $(BUILD) bin/$(PROJ) .*.sw[op] *~ core ../v32as-project.zip *.zip *.patch
+	@rm -rvf $(BUILD) bin/$(PROJ) bin/v32ld .*.sw[op] *~ core ../v32as-project.zip *.zip *.patch
 
 archive: clean
 	@zip -r ../v32as-project.zip . -x '.git/*' 'build/*' 'bin/*'
