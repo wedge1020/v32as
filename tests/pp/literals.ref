@@ -1,0 +1,8 @@
+_msg:
+  string "X ; X"
+  mov R0, 88
+  mov R1, 9
+  mov R2, 255
+  mov R3, 9
+  mov R4, 31
+  float 1.5

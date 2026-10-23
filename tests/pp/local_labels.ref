@@ -1,0 +1,11 @@
+_first:
+_first__loop:
+  isub R1, 1
+  jt R1, _first__loop
+  mov R2, 3.5
+  mov R3, '.'
+  string ".loop"
+_second:
+_second__loop:
+  jmp _second__loop
+  jmp _first__loop

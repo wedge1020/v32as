@@ -1,0 +1,22 @@
+  mov R0, 641
+  mov R1, 322
+  mov R2, 19
+  mov R3, -3
+  mov R4, -1
+  mov R5, -2147483648
+  mov R6, -2147483648
+  mov R7, 66
+  mov R8, 10
+  mov R9, 0
+  mov R10, 3
+  mov R11, 12
+  mov R12, 87
+  float 3.0
+  float 106.666664
+  float 0.5
+  float 3.5
+  mov R13, 0
+  float -0.25
+  float 8.0
+  float 0.3
+  mov R14, 1

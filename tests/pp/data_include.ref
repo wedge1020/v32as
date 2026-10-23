@@ -1,0 +1,5 @@
+_blob:
+  integer 0x04030201
+  integer 3
+_end:
+  hlt

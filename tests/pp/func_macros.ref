@@ -1,0 +1,14 @@
+_label_1:
+  mov R0, 20
+  mov R1, 9
+  mov R2, 7
+  push R3
+  mov R5, 7
+  integer 1
+  integer 1, 2, 3
+  integer 6, 5
+  string "a \"q\" 'c'"
+_label_2:
+  jmp _label_1
+  jmp _label_2
+  mov R6, 1

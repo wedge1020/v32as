@@ -1,0 +1,4 @@
+  mov R0, 7
+  mov R1, 9
+  mov R2, 1
+  mov R3, 4

@@ -1,0 +1,3 @@
+_once_code:
+  hlt
+  mov R0, 1

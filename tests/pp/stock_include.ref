@@ -1,0 +1,6 @@
+_function_wait:
+  wait
+  ret
+_main:
+  call _function_wait
+  hlt

@@ -1,0 +1,13 @@
+  mov R0, 6
+  mov R1, 7
+  float 3.0
+  mov R2, 255
+  mov R3, 0
+  mov R3, 1
+  mov R3, 2
+  mov R4, 14
+  string "assign_counter.asm"
+  mov R5, 0
+  mov R6, 0x20000000
+  mov R7, 1
+  mov R8, 1
