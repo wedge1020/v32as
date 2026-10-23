@@ -1,0 +1,5 @@
+    mov R1, 100
+    mov R2, 101
+    mov R3, 1
+    mov R4, 2
+    hlt

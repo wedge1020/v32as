@@ -47,6 +47,8 @@ printf '%%ifdef FLAG\n  mov R0, FLAG\n%%endif\n' > "$T/d.asm"
 "$BIN" -E -P -D FLAG=42 -U FLAG "$T/d.asm" 2>/dev/null | grep -q 'mov R0' && bad "-U" || ok
 ( cd pp && "$BIN" --cart -B -g -o "$T/g.vbin" dbg_include.asm ) 2>/dev/null
 cmp -s "$T/g.vbin.debug" pp/dbg_include.debug && ok || bad "pp/dbg_include (.debug differs)"
+( cd pp && "$BIN" --cart -B -g -o "$T/g.vbin" dbg_macro.asm ) 2>/dev/null
+cmp -s "$T/g.vbin.debug" pp/dbg_macro.debug && ok || bad "pp/dbg_macro (.debug differs)"
 # preprocessor: -E output under --standard
 for f in pp/stdexpand/*.asm; do
   n=${f%.asm}

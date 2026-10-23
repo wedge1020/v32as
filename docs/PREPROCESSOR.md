@@ -256,5 +256,40 @@ gives the old listing; `--standard` switches every extension off (table in READM
 Decisions taken during Phase 2: `%assign`/`%eval NAME` are the same directive; `%eval(...)` must be followed by `(`
 (a line *starting* with `%eval(` is source text, not a directive); float results print as the shortest `d+.d+`
 that round-trips (the scanner has no exponent form); `.local` labels expand to `<global>__<name>`.
-Not done (Phase 3): `%macro`/`%endmacro`, `%rep`, `%%local` labels, operand-type predicates (`%ifreg`, `%ifnum`...),
-`%idefine`/`%imacro`, string helpers, context stack.
+(Phase 3 below completes that list.)
+
+## 11. Phase 3 status (implemented)
+Added: `%macro`/`%imacro`/`%endmacro`, `%unmacro`, `%rep`/`%endrep`/`%exitrep`, `%exitmacro`, `%rotate`, `%%local`
+labels and `%@` (rep iteration), operand tests (`%ifreg %ifsysreg %ifnum %ifstr %iflabel %ifport %ifidn %ifidni
+%ifempty %ifmacro %ifctx`, each with `n` negation and `%elif` forms), `%idefine`/`%xdefine`/`%ixdefine`, `%strlen
+%substr %strcat %defstr`, the `%push`/`%pop`/`%repl` context stack with `%$name`, `%pragma once|shadow`, the macro
+libraries `lib/v32as.inc` and `lib/control.inc`, REPL continuation (`pp_pending`).
+
+How it works (pp.c): `%macro`/`%rep` switch the line processor into *capture* mode: raw lines are stored (conditionals
+are not evaluated) until the matching terminator, counting nested openers. Running a body feeds each stored line,
+after argument substitution, back through `process_line`, so a body may hold directives, conditionals, further
+macros and loops. Execution contexts (`ctx_t`: macro or rep) form a stack that carries the arguments, `%rotate`
+state, the `%%` serial, and the `%if` depth at entry (an `%else`/`%endif` cannot close a conditional opened outside
+the macro; one left open inside is an error). `%exitmacro`/`%exitrep` set an unwind request that the replay loops
+honour. A macro is invoked from `process_line` when the first token after optional `label:` prefixes names one.
+Lines inside a *nested* `%rep` stay raw until that loop runs, so `%rotate` and `%@` take effect per iteration.
+Source positions: everything a body produces is attributed to the invocation line (flag `expanded` set), which keeps
+the `-g` format unchanged.
+
+Decisions taken: statement macros live in their own namespace (not the `%define` one) and are matched on the first
+token only; overloads by argument count; an argument that is empty takes the default; `%N` of an optional argument
+that was left out is empty, beyond the declared maximum it is an error; in lines that will not be looked at (dead
+branch, `%elif` after a taken branch) a missing `%N` is not an error; `%%x` is per expansion, per iteration only for a
+`%rep` outside any macro; a macro hides a built-in name with a warning unless `%pragma shadow`; contexts are global to
+the run (not per file) and an unterminated `%push` at the end of the outermost file is an error.
+Limits: 64 nested expansions, 1,000,000 iterations per `%rep`, about 4.2 million replayed body lines per run
+(`MAX_WORK_LINES`), a `%rep` stops at its first iteration that reports an error.
+
+Not done: `%for`, `%local` (context-local `%define` is possible through `%$name`), `%rep` over a list, `-MD/-MF`
+dependency output, wrappers over the `IP`/`IR`/`IV` expansions (waiting for the result of `experiments/sysreg` on a
+real console/emulator before putting self-modifying code into a library).
+
+Tests: `tests/pp/macro_*.asm`, `rep_basic`, `ctx_control`, `lib_macros`, `str_directives`, `idefine_imacro`
+(assembled output equals the hand-expanded `.ref`), `pp/expand/macros` (`-E` golden), `pp/dbg_macro` (`.debug`
+golden: generated code is attributed to the invocation), `errors/pp3_*` (messages) and `std/*_directive` (all of it
+is off under `--standard`). ASan/UBSan clean, plus a few thousand mutated sources without a crash or leak.

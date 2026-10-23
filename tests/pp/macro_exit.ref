@@ -1,0 +1,8 @@
+    mov R1, 0
+    imin R2, 7
+    iadd R2, 1
+    iadd R1, 0
+    iadd R1, 1
+    iadd R1, 0
+    mov R2, 99
+    hlt

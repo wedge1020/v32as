@@ -4,6 +4,10 @@
 #   make debug      build with -g and no optimization
 #   make test       run the regression tests (tests/run_tests.sh)
 #   make install    copy the tool into ~/bin
+#   make archive    zip the sources (without build products) to ../v32as-project.zip
+#
+# Layout:  src/ sources   inc/ headers   docs/ design notes   tests/ regression tests
+#          build/ generated files and objects (made on demand)   bin/ the finished tool
 #
 # Requires: a C compiler, flex and bison. GNU readline is used for the interactive
 # mode when its development files are found (make READLINE=0 to opt out).
@@ -12,10 +16,14 @@ CC       ?= gcc
 FLEX     ?= flex
 BISON    ?= bison
 CFLAGS   ?= -O2
-CFLAGS   += -Wall -Wextra -std=gnu11 -Wno-unused-parameter
+override CFLAGS += -Wall -Wextra -std=gnu11 -Wno-unused-parameter
 LIBS     = -lm
 PROJ     = v32as
-OBJ      = parser.tab.o lexer.o asm.o tables.o pp.o ppexpr.o main.o
+SRC      = src
+INC      = inc
+BUILD    = build
+override CFLAGS += -I$(INC) -I$(BUILD)
+OBJ      = $(addprefix $(BUILD)/,parser.tab.o lexer.o asm.o tables.o pp.o ppexpr.o main.o)
 
 READLINE ?= auto
 ifeq ($(READLINE),auto)
@@ -24,44 +32,40 @@ else
   HAVE_RL := $(filter 1,$(READLINE))
 endif
 ifeq ($(HAVE_RL),1)
-  CFLAGS += -DHAVE_READLINE
-  LIBS   += -lreadline
+  override CFLAGS += -DHAVE_READLINE
+  override LIBS += -lreadline
 endif
+
+HDRS     = $(wildcard $(INC)/*.h)
 
 all: bin/$(PROJ)
 
-debug: CFLAGS += -g -O0 -DDEBUG
+debug: override CFLAGS += -g -O0 -DDEBUG
 debug: all
 
 bin/$(PROJ): $(OBJ)
 	@mkdir -p bin
 	$(CC) -o $@ $(OBJ) $(LIBS)
 
-parser.tab.c parser.tab.h: parser.y
-	$(BISON) -Wall -d -o parser.tab.c parser.y
+$(BUILD):
+	@mkdir -p $(BUILD)
 
-lexer.c: lexer.l parser.tab.h
-	$(FLEX) -o lexer.c lexer.l
+# generated sources
+$(BUILD)/parser.tab.c $(BUILD)/parser.tab.h: $(SRC)/parser.y | $(BUILD)
+	$(BISON) -Wall -d -o $(BUILD)/parser.tab.c $(SRC)/parser.y
 
-parser.tab.o: parser.tab.c v32as.h pp.h
+$(BUILD)/lexer.c: $(SRC)/lexer.l $(BUILD)/parser.tab.h | $(BUILD)
+	$(FLEX) -o $@ $(SRC)/lexer.l
+
+# generated files get their own warning exemptions
+$(BUILD)/parser.tab.o: $(BUILD)/parser.tab.c $(HDRS)
 	$(CC) $(CFLAGS) -Wno-unused-but-set-variable -c -o $@ $<
 
-lexer.o: lexer.c parser.tab.h v32as.h
+$(BUILD)/lexer.o: $(BUILD)/lexer.c $(BUILD)/parser.tab.h $(HDRS)
 	$(CC) $(CFLAGS) -Wno-sign-compare -Wno-unused-function -c -o $@ $<
 
-asm.o: asm.c parser.tab.h v32as.h pp.h
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-tables.o: tables.c v32as.h
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-pp.o: pp.c pp.h ppexpr.h v32as.h
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-ppexpr.o: ppexpr.c ppexpr.h v32as.h
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-main.o: main.c v32as.h pp.h
+# hand-written sources
+$(BUILD)/%.o: $(SRC)/%.c $(BUILD)/parser.tab.h $(HDRS) | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 test: all
@@ -72,9 +76,9 @@ install: all
 	@cp -av bin/$(PROJ) /home/$(USER)/bin/
 
 clean:
-	@rm -vf *.o parser.tab.c parser.tab.h lexer.c .*.sw[op] *~ core bin/$(PROJ) ../v32as-project.zip *.zip *.patch
+	@rm -rvf $(BUILD) bin/$(PROJ) .*.sw[op] *~ core ../v32as-project.zip *.zip *.patch
 
 archive: clean
-	@zip -r ../v32as-project.zip *
+	@zip -r ../v32as-project.zip . -x '.git/*' 'build/*' 'bin/*'
 
-.PHONY: all debug test install clean
+.PHONY: all debug test install clean archive

@@ -48,6 +48,7 @@ unsigned     pp_process     (pp_t *p, const char *name, const char *text, size_t
 // definitions persist from line to line.
 void         pp_stream_begin (pp_t *p, const char *name);
 unsigned     pp_stream_line  (pp_t *p, const char *line, size_t len, int lineno);
+int          pp_pending      (const pp_t *p);       // inside %macro / %rep / %if: more input is expected
 
 // Results
 const char     *pp_output   (const pp_t *p, size_t *len);

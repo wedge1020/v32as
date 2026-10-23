@@ -1,0 +1,2 @@
+%ifidn a
+%endif

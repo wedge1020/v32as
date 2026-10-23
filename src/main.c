@@ -283,7 +283,11 @@ static int  repl (asm_t *a, pp_t *pp)
         char  *p;
         char  *end;
 
-        if (a -> has_base)
+        if (pp_pending (pp))
+        {
+            snprintf (prompt, sizeof (prompt), "   ...> ");
+        }
+        else if (a -> has_base)
         {
             snprintf (prompt, sizeof (prompt), "[0x%08X] > ", a -> base + (uint32_t) a -> nwords);
         }
@@ -676,6 +680,10 @@ int  main (int  argc, char **argv)
             rc = repl (&a, pp);
             asm_free (&a);
             pp_free (pp);
+            free (files);
+            free (mopts);
+            free (incdirs);
+            free (derived);
             return (rc);
         }
 
@@ -763,6 +771,8 @@ int  main (int  argc, char **argv)
         pp_free  (pp);
         free     (files);
         free     (mopts);
+        free     (incdirs);
+        free     (derived);
 
         return (rc);
     }

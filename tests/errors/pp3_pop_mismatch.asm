@@ -1,0 +1,2 @@
+%push a
+%pop b

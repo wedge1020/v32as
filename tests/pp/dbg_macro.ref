@@ -1,0 +1,6 @@
+_go:
+    iadd R1, 1
+    iadd R1, 1
+    mov R2, 3
+    iadd R2, 1
+    iadd R2, 1

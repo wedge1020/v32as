@@ -1,0 +1,21 @@
+    mov R1, 0
+    mov R1, 1
+    mov R1, 2
+    wait
+    wait
+    hlt
+    wait
+    wait
+    hlt
+    iadd R2, 0
+    iadd R2, 1
+    iadd R2, 2
+_s1:
+    jt R3, _s1
+_s2:
+    jt R3, _s2
+    wait
+    wait
+    wait
+    wait
+    hlt

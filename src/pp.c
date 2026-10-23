@@ -14,6 +14,10 @@
 //    own expansion produced, which makes self-reference harmless.
 //  - %define bodies are stored unexpanded and expanded where they are used (late binding,
 //    as in the stock assembler and in C). %assign and %eval(...) compute a value right away.
+//  - %macro and %rep bodies are captured as raw lines and replayed through the same line
+//    processor, so a body can hold directives, conditionals, other macros and %rep blocks.
+//    A macro is invoked as a statement (optionally after labels): its arguments are split at
+//    the top-level commas and substituted into each body line before that line is processed.
 //  - Everything beyond the stock assembler's preprocessor is switched off by --standard
 //    (pp_set_standard): then this file behaves like the official tool, quirks included.
 //
@@ -36,6 +40,10 @@
 #define  MAX_LINE_BYTES      (1u << 22)     // one expanded line (4 MiB)
 #define  MAX_SPLICES         200000         // replacements in one line
 #define  HASH_SIZE           256
+#define  MAX_CTX_DEPTH       64             // nested %macro / %rep executions
+#define  MAX_REP_COUNT       1000000        // iterations of one %rep
+#define  MAX_OUT_LINES       (1u << 23)     // lines of output (guards runaway expansion)
+#define  MAX_WORK_LINES      (1u << 22)     // body lines replayed in one run, output or not
 
 ////////////////////////////////////////////////////////////////////////////////////////
 //
@@ -192,9 +200,67 @@ typedef struct macro
     int            nparams;             // named parameters (not counting the variadic tail)
     int            variadic;            // the last parameter is "..." (__VA_ARGS__)
     char         **params;              // nparams names (+ "__VA_ARGS__" when variadic)
+    int            icase;               // %idefine: found whatever the case (name stored lower-cased)
     struct macro  *next;
 }
 macro_t;
+
+// A multi-line macro (%macro ... %endmacro). Several may share a name if their argument
+// counts differ.
+typedef struct smacro
+{
+    char           *name;               // as written for %macro, lower-cased for %imacro
+    int             icase;
+    int             min;                // fewest arguments accepted
+    int             max;                // most accepted; -1: any number
+    int             nparams;            // named parameters (incl. the variadic tail)
+    char          **pnames;             // NULL entries for anonymous (%1 only) parameters
+    char          **defaults;           // NULL when there is no default
+    int             variadic;           // the last named parameter takes the remaining arguments
+    char          **body;               // raw lines
+    int            *bline;              // their source lines (for -E style notes only)
+    int             nbody;
+    const char     *dfile;              // where it was defined
+    int             dline;
+    struct smacro  *next;
+}
+smacro_t;
+
+// What is being captured between %macro/%rep and its terminator
+typedef struct
+{
+    int          kind;                  // 0: nothing, CTX_MACRO or CTX_REP
+    int          depth;                 // nested openers of the same kind seen so far
+    smacro_t    *m;                     // the macro being defined (NULL: parse error, discard)
+    long         count;                 // %rep count
+    char       **line;
+    int         *lineno;
+    int          n;
+    int          cap;
+    int          nframes;               // the file the capture started in
+    int          nctx;                  // the macro/rep execution it started in
+    int          start;                 // line of the opener
+    const char  *file;
+}
+capture_t;
+
+enum { CTX_NONE = 0, CTX_MACRO = 1, CTX_REP = 2 };
+
+// One running %macro expansion or %rep
+typedef struct
+{
+    int         kind;
+    smacro_t   *m;
+    char      **args;                   // the actual arguments, after defaults
+    int         nargs;
+    int         rot;                    // %rotate
+    unsigned    serial;                 // for %%labels
+    int         iter;                   // %rep: iteration number (1-based)
+    int         start_ncond;
+    void       *frame;
+    int         line;                   // where the invocation / %rep was
+}
+ctx_t;
 
 typedef struct
 {
@@ -244,7 +310,33 @@ struct pp
     int        nonce;
     unsigned   counter;             // __COUNTER__
     char      *last_global;         // last global label seen, for .local labels
+
+    // multi-line macros, %rep
+    smacro_t  *smtab[HASH_SIZE];
+    int        nicase;              // number of case-insensitive macros (of either kind)
+    capture_t  cap;
+    ctx_t     *ctx;
+    int        nctx;
+    int        capctx;
+    int        unwind;              // pending %exitmacro / %exitrep (a CTX_ kind)
+    unsigned   serial;              // %%label serial numbers
+    int        halt;                // output cap reached: stop quietly
+    unsigned   work;                // body lines replayed so far
+    int        shadow_all;          // %pragma shadow
+    char     **shadow;
+    int        nshadow;
+
+    // %push / %pop context stack
+    char     **cname;
+    unsigned  *cid;
+    int        ncstack;
+    int        capcstack;
+    unsigned   cserial;
 };
+
+static void  smac_free (smacro_t *m);
+static void  cap_reset (pp_t *p);
+static void  free_args (char **v, int n);
 
 ////////////////////////////////////////////////////////////////////////////////////////
 //
@@ -289,6 +381,24 @@ static macro_t  *macro_find (const pp_t *p, const char *name, size_t n)
         }
     }
 
+    if (m == NULL && p -> nicase > 0)
+    {
+        char  *q;
+
+        for (q = key; *q; q++)
+        {
+            *q = (char) tolower ((unsigned char) *q);
+        }
+
+        for (m = p -> tab[hash_name (key)]; m != NULL; m = m -> next)
+        {
+            if (m -> icase && strcmp (m -> name, key) == 0)
+            {
+                break;
+            }
+        }
+    }
+
     if (key != tmp)
     {
         free (key);
@@ -314,39 +424,68 @@ static void  macro_free (macro_t *m)
 
 static void  macro_remove (pp_t *p, const char *name)
 {
-    macro_t  **link = &p -> tab[hash_name (name)];
+    macro_t  *m = macro_find (p, name, strlen (name));
+    macro_t  **link;
 
-    while (*link != NULL)
+    if (m == NULL)
     {
-        if (strcmp ((*link) -> name, name) == 0)
-        {
-            macro_t  *dead = *link;
+        return;
+    }
 
-            *link = dead -> next;
-            macro_free (dead);
-            return;
-        }
+    link = &p -> tab[hash_name (m -> name)];
 
+    while (*link != m)
+    {
         link = &(*link) -> next;
     }
+
+    *link = m -> next;
+
+    if (m -> icase)
+    {
+        p -> nicase--;
+    }
+
+    macro_free (m);
 }
 
 // Defines (or redefines) an object-like macro; for a function-like one, fill in the
 // returned macro's parameters afterwards
-static macro_t  *macro_set (pp_t *p, const char *name, const char *body)
+static macro_t  *macro_set_i (pp_t *p, const char *name, const char *body, int icase)
 {
     macro_t  *m;
+    char     *key = xstrndup (name, strlen (name));
+    char     *q;
 
-    macro_remove (p, name);
+    if (icase)
+    {
+        for (q = key; *q; q++)
+        {
+            *q = (char) tolower ((unsigned char) *q);
+        }
+    }
+
+    macro_remove (p, key);
 
     m          = xrealloc (NULL, sizeof (*m));
     memset (m, 0, sizeof (*m));
-    m -> name  = xstrndup (name, strlen (name));
+    m -> name  = key;
     m -> body  = xstrndup (body, strlen (body));
-    m -> next  = p -> tab[hash_name (name)];
-    p -> tab[hash_name (name)] = m;
+    m -> icase = icase;
+    m -> next  = p -> tab[hash_name (key)];
+    p -> tab[hash_name (key)] = m;
+
+    if (icase)
+    {
+        p -> nicase++;
+    }
 
     return (m);
+}
+
+static macro_t  *macro_set (pp_t *p, const char *name, const char *body)
+{
+    return (macro_set_i (p, name, body, 0));
 }
 
 void  pp_undefine (pp_t *p, const char *name)
@@ -414,6 +553,39 @@ void  pp_free (pp_t *p)
             macro_free (m);
         }
     }
+
+    for (i = 0; i < HASH_SIZE; i++)
+    {
+        while (p -> smtab[i] != NULL)
+        {
+            smacro_t  *m = p -> smtab[i];
+
+            p -> smtab[i] = m -> next;
+            smac_free (m);
+        }
+    }
+
+    for (i = 0; i < p -> nctx; i++)
+    {
+        free_args (p -> ctx[i].args, p -> ctx[i].nargs);
+    }
+
+    for (i = 0; i < p -> nshadow; i++)
+    {
+        free (p -> shadow[i]);
+    }
+
+    cap_reset (p);
+
+    for (i = 0; i < p -> ncstack; i++)
+    {
+        free (p -> cname[i]);
+    }
+
+    free (p -> cname);
+    free (p -> cid);
+    free (p -> ctx);
+    free (p -> shadow);
 
     for (i = 0; i < p -> nframes; i++)
     {
@@ -561,7 +733,7 @@ static void  vmsg (pp_t *p, const char *kind, int line, int col, const char *fmt
 
     fflush (stdout);
 
-    if (col > 0)
+    if (col > 0 && p -> nctx == 0)
     {
         fprintf (stderr, "%s:%d:%d: %s: ", f -> name, line, col, kind);
     }
@@ -572,6 +744,32 @@ static void  vmsg (pp_t *p, const char *kind, int line, int col, const char *fmt
 
     vfprintf (stderr, fmt, ap);
     fputc    ('\n', stderr);
+
+    for (k = p -> nctx - 1; k >= 0; k--)
+    {
+        const ctx_t  *c = &p -> ctx[k];
+
+        if (k < p -> nctx - 6 && k > 5)
+        {
+            if (k == p -> nctx - 7)
+            {
+                fprintf (stderr, "%s:%d: note: ... %d more expansion levels ...\n", f -> name, c -> line,
+                         p -> nctx - 12);
+            }
+
+            continue;
+        }
+
+        if (c -> kind == CTX_MACRO)
+        {
+            fprintf (stderr, "%s:%d: note: in expansion of macro '%s' (defined at %s:%d)\n", f -> name,
+                     c -> line, c -> m -> name, c -> m -> dfile, c -> m -> dline);
+        }
+        else
+        {
+            fprintf (stderr, "%s:%d: note: in %%rep, iteration %d\n", f -> name, c -> line, c -> iter);
+        }
+    }
 
     for (k = p -> nframes - 2; k >= 0; k--)
     {
@@ -1738,6 +1936,18 @@ static void  emit_line (pp_t *p, frame_t *f, const char *s, size_t n)
     const char  *why     = NULL;
     int          rc;
 
+    if (p -> halt)
+    {
+        return;
+    }
+
+    if (p -> nmap >= MAX_OUT_LINES)
+    {
+        pp_error (p, 0, "the output is too large (more than %u lines): runaway %%rep or macro?", MAX_OUT_LINES);
+        p -> halt = 1;
+        return;
+    }
+
     buf_init (&b, s, n);
     rc = expand_buffer (p, &b, &h, 0, &changed, &why);
     free (h.v);
@@ -1775,7 +1985,7 @@ static void  emit_line (pp_t *p, frame_t *f, const char *s, size_t n)
 
     buf_put (&p -> out, b.s, b.len);
     buf_put (&p -> out, "\n", 1);
-    map_push (p, f -> name, f -> line, changed);
+    map_push (p, f -> name, f -> line, changed || p -> nctx > 0);
 
     free (b.s);
 }
@@ -2262,7 +2472,7 @@ static int  check_stock_body (pp_t *p, const char *name, const char *body, size_
     return (0);
 }
 
-static void  do_define (pp_t *p, const char *s, size_t n, size_t j)
+static void  do_define (pp_t *p, const char *s, size_t n, size_t j, int icase, int expand)
 {
     char     *name = expect_ident (p, s, n, &j, "definition name is missing");
     macro_t  *m;
@@ -2314,7 +2524,32 @@ static void  do_define (pp_t *p, const char *s, size_t n, size_t j)
         return;
     }
 
-    m = macro_set (p, name, body);
+    // %xdefine: the value is expanded now rather than where it is used
+    if (expand && !proto.is_func)
+    {
+        buf_t        x;
+        hides_t      h       = { 0 };
+        int          changed = 0;
+        const char  *why     = NULL;
+
+        buf_init (&x, body, strlen (body));
+
+        if (expand_buffer (p, &x, &h, 0, &changed, &why) != 0)
+        {
+            pp_error (p, (int) b + 1, "%s", why);
+            free (x.s);
+            free (h.v);
+            free (body);
+            free (name);
+            return;
+        }
+
+        free (h.v);
+        free (body);
+        body = x.s;
+    }
+
+    m = macro_set_i (p, name, body, icase);
 
     if (proto.is_func)
     {
@@ -2328,6 +2563,1997 @@ static void  do_define (pp_t *p, const char *s, size_t n, size_t j)
     free (name);
 }
 
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// Multi-line macros (%macro ... %endmacro) and %rep ... %endrep
+//
+//   %macro CLAMP reg, lo=0, hi=255          named parameters, defaults
+//       imax  reg, lo                        (%1 %2 %3, %0 and %* work too)
+//       imin  reg, hi
+//   %endmacro
+//
+//   CLAMP R3, 10                             invoked like an instruction
+//
+static void  process_line (pp_t *p, const char *s, size_t n);
+
+static unsigned  hash_lower (const char *s, size_t n)
+{
+    unsigned  h = 5381;
+    size_t    i;
+
+    for (i = 0; i < n; i++)
+    {
+        h = h * 33 + (unsigned char) tolower ((unsigned char) s[i]);
+    }
+
+    return (h % HASH_SIZE);
+}
+
+static int  smac_name_is (const smacro_t *m, const char *name, size_t n)
+{
+    if (strlen (m -> name) != n)
+    {
+        return (0);
+    }
+
+    return (m -> icase ? strncasecmp (m -> name, name, n) == 0 : memcmp (m -> name, name, n) == 0);
+}
+
+static void  smac_free (smacro_t *m)
+{
+    int  i;
+
+    if (m == NULL)
+    {
+        return;
+    }
+
+    for (i = 0; i < m -> nparams; i++)
+    {
+        free (m -> pnames[i]);
+        free (m -> defaults[i]);
+    }
+
+    for (i = 0; i < m -> nbody; i++)
+    {
+        free (m -> body[i]);
+    }
+
+    free (m -> pnames);
+    free (m -> defaults);
+    free (m -> body);
+    free (m -> bline);
+    free (m -> name);
+    free (m);
+}
+
+static int  smac_accepts (const smacro_t *m, int nargs)
+{
+    return (nargs >= m -> min && (m -> max < 0 || nargs <= m -> max));
+}
+
+// the macro of that name taking nargs arguments (nargs < 0: any); *any tells whether the
+// name is known at all
+static smacro_t  *smac_pick (const pp_t *p, const char *name, size_t n, int nargs, int *any)
+{
+    smacro_t  *m;
+
+    if (any != NULL)
+    {
+        *any = 0;
+    }
+
+    for (m = p -> smtab[hash_lower (name, n)]; m != NULL; m = m -> next)
+    {
+        if (smac_name_is (m, name, n))
+        {
+            if (any != NULL)
+            {
+                *any = 1;
+            }
+
+            if (nargs < 0 || smac_accepts (m, nargs))
+            {
+                return (m);
+            }
+        }
+    }
+
+    return (NULL);
+}
+
+static void  smac_unlink_all (pp_t *p, const char *name, size_t n, int *count)
+{
+    smacro_t  **link = &p -> smtab[hash_lower (name, n)];
+
+    while (*link != NULL)
+    {
+        if (smac_name_is (*link, name, n))
+        {
+            smacro_t  *dead = *link;
+
+            *link = dead -> next;
+
+            if (dead -> icase)
+            {
+                p -> nicase--;
+            }
+
+            smac_free (dead);
+            (*count)++;
+        }
+        else
+        {
+            link = &(*link) -> next;
+        }
+    }
+}
+
+static int  shadow_allowed (const pp_t *p, const char *name)
+{
+    int  i;
+
+    if (p -> shadow_all)
+    {
+        return (1);
+    }
+
+    for (i = 0; i < p -> nshadow; i++)
+    {
+        if (strcasecmp (p -> shadow[i], name) == 0)
+        {
+            return (1);
+        }
+    }
+
+    return (0);
+}
+
+// Registers a finished macro. Two definitions of a name may only differ in argument count.
+static int  smac_add (pp_t *p, smacro_t *m, int line)
+{
+    smacro_t  *o;
+    size_t     nlen = strlen (m -> name);
+
+    for (o = p -> smtab[hash_lower (m -> name, nlen)]; o != NULL; o = o -> next)
+    {
+        if (smac_name_is (o, m -> name, nlen) || smac_name_is (m, o -> name, strlen (o -> name)))
+        {
+            int  lo = m -> min > o -> min ? m -> min : o -> min;
+            int  overlap;
+
+            if (m -> max < 0 && o -> max < 0)
+            {
+                overlap = 1;
+            }
+            else if (m -> max < 0)
+            {
+                overlap = (o -> max >= lo);
+            }
+            else if (o -> max < 0)
+            {
+                overlap = (m -> max >= lo);
+            }
+            else
+            {
+                overlap = (m -> max < o -> max ? m -> max : o -> max) >= lo;
+            }
+
+            if (overlap)
+            {
+                pp_error_at (p, line, 0, "macro '%s' is already defined for this number of arguments "
+                                         "(at %s:%d); use %%unmacro first",
+                             m -> name, o -> dfile, o -> dline);
+                return (-1);
+            }
+        }
+    }
+
+    if (kw_lookup (m -> name, nlen) != NULL && !shadow_allowed (p, m -> name))
+    {
+        pp_warning_at (p, line, 0, "macro '%s' hides the built-in name of the same name "
+                                   "(%%pragma shadow silences this)", m -> name);
+    }
+
+    m -> next = p -> smtab[hash_lower (m -> name, nlen)];
+    p -> smtab[hash_lower (m -> name, nlen)] = m;
+
+    if (m -> icase)
+    {
+        p -> nicase++;
+    }
+
+    return (0);
+}
+
+// Index of the next comma outside any bracket, string or character literal (or n)
+static size_t  scan_arg_end (const char *s, size_t n, size_t i)
+{
+    int  depth = 0;
+
+    while (i < n)
+    {
+        char  c = s[i];
+
+        if (c == '"')
+        {
+            i = skip_string (s, n, i);
+        }
+        else if (c == '\'')
+        {
+            size_t  k = char_literal_len (s, n, i);
+
+            i += (k ? k : 1);
+        }
+        else if (c == '(' || c == '[' || c == '{')
+        {
+            depth++;
+            i++;
+        }
+        else if (c == ')' || c == ']' || c == '}')
+        {
+            if (depth > 0)
+            {
+                depth--;
+            }
+
+            i++;
+        }
+        else if (c == ',' && depth == 0)
+        {
+            return (i);
+        }
+        else
+        {
+            i++;
+        }
+    }
+
+    return (n);
+}
+
+// Index of the '}' that closes the '{' at s[i] (or n)
+static size_t  brace_close (const char *s, size_t n, size_t i)
+{
+    int  depth = 0;
+
+    while (i < n)
+    {
+        if (s[i] == '"')
+        {
+            i = skip_string (s, n, i);
+            continue;
+        }
+
+        if (s[i] == '{')
+        {
+            depth++;
+        }
+        else if (s[i] == '}' && --depth == 0)
+        {
+            return (i);
+        }
+
+        i++;
+    }
+
+    return (n);
+}
+
+static void  trim_range (const char *s, size_t *b, size_t *e)
+{
+    while (*b < *e && is_ws ((unsigned char) s[*b]))
+    {
+        (*b)++;
+    }
+
+    while (*e > *b && is_ws ((unsigned char) s[*e - 1]))
+    {
+        (*e)--;
+    }
+}
+
+// Splits "a, b, {c, d}" into trimmed argument texts. A lone blank text is no arguments.
+static void  split_args (const char *s, size_t n, char ***out, int *count)
+{
+    char   **v   = NULL;
+    int      nv  = 0;
+    size_t   i   = 0;
+    size_t   b0  = 0;
+    size_t   e0  = n;
+
+    trim_range (s, &b0, &e0);
+
+    if (b0 == e0)
+    {
+        *out   = NULL;
+        *count = 0;
+        return;
+    }
+
+    i = b0;
+    n = e0;
+
+    for (;;)
+    {
+        size_t  e = scan_arg_end (s, n, i);
+        size_t  b = i;
+        size_t  t = e;
+
+        trim_range (s, &b, &t);
+
+        // {braced} groups an argument that contains commas: the braces are dropped
+        if (t - b >= 2 && s[b] == '{' && s[t - 1] == '}' && brace_close (s, t, b) == t - 1)
+        {
+            b++;
+            t--;
+            trim_range (s, &b, &t);
+        }
+
+        v = xrealloc (v, (size_t) (nv + 1) * sizeof (char *));
+        v[nv++] = xstrndup (s + b, t - b);
+
+        if (e >= n)
+        {
+            break;
+        }
+
+        i = e + 1;
+    }
+
+    *out   = v;
+    *count = nv;
+}
+
+// Parses what follows "%macro NAME": "reg, lo=0, rest...", or a count ("2", "1-3", "1-*")
+static smacro_t  *smac_parse_header (pp_t *p, const char *s, size_t n, size_t j, const char *name, int icase)
+{
+    smacro_t  *m   = xrealloc (NULL, sizeof (*m));
+    size_t     b   = skip_ws (s, n, j);
+    size_t     e   = find_comment (s, n, b);
+    int        seen_default = 0;
+    int        k;
+
+    memset (m, 0, sizeof (*m));
+
+    m -> name  = xstrndup (name, strlen (name));
+    m -> icase = icase;
+
+    if (icase)
+    {
+        char  *q;
+
+        for (q = m -> name; *q; q++)
+        {
+            *q = (char) tolower ((unsigned char) *q);
+        }
+    }
+
+    {
+        frame_t  *f = frame_top (p);
+
+        m -> dfile = f -> name;
+        m -> dline = f -> line;
+    }
+
+    while (e > b && is_ws ((unsigned char) s[e - 1]))
+    {
+        e--;
+    }
+
+    if (b == e)
+    {
+        return (m);                                 // no parameters
+    }
+
+    if (isdigit ((unsigned char) s[b]))
+    {
+        char  *end;
+        long   lo = strtol (s + b, &end, 10);
+        long   hi = lo;
+        size_t q  = (size_t) (end - s);
+
+        if (q < e && s[q] == '-')
+        {
+            q++;
+
+            if (q < e && s[q] == '*')
+            {
+                hi = -1;
+                q++;
+            }
+            else
+            {
+                hi = strtol (s + q, &end, 10);
+                q  = (size_t) (end - s);
+            }
+        }
+
+        q = skip_ws (s, e, q);
+
+        if (q != e || lo < 0 || lo > 255 || (hi >= 0 && hi < lo) || hi > 255)
+        {
+            pp_error (p, (int) b + 1, "bad argument count for the macro (use N, N-M or N-*)");
+            smac_free (m);
+            return (NULL);
+        }
+
+        m -> min = (int) lo;
+        m -> max = (int) hi;
+        return (m);
+    }
+
+    for (;;)
+    {
+        size_t  ne;
+        size_t  de;
+        char   *pname;
+        char   *dflt = NULL;
+        int     variadic = 0;
+
+        b = skip_ws (s, e, b);
+
+        if (b + 2 < e + 0 && s[b] == '.' && s[b + 1] == '.' && s[b + 2] == '.')
+        {
+            pname    = xstrndup ("__VA_ARGS__", 11);
+            variadic = 1;
+            ne       = b + 3;
+        }
+        else
+        {
+            if (b >= e || !is_ident_start ((unsigned char) s[b]))
+            {
+                pp_error (p, (int) b + 1, "expected a parameter name");
+                smac_free (m);
+                return (NULL);
+            }
+
+            ne = b;
+
+            while (ne < e && is_ident_char ((unsigned char) s[ne]))
+            {
+                ne++;
+            }
+
+            pname = xstrndup (s + b, ne - b);
+
+            if (ne + 2 < e + 0 && s[ne] == '.' && s[ne + 1] == '.' && s[ne + 2] == '.')
+            {
+                variadic = 1;
+                ne += 3;
+            }
+        }
+
+        for (k = 0; k < m -> nparams; k++)
+        {
+            if (strcmp (m -> pnames[k], pname) == 0)
+            {
+                pp_error (p, (int) b + 1, "duplicate parameter name '%s'", pname);
+                free (pname);
+                smac_free (m);
+                return (NULL);
+            }
+        }
+
+        b = skip_ws (s, e, ne);
+
+        if (!variadic && b < e && s[b] == '=')
+        {
+            size_t  db;
+            size_t  dt;
+
+            de = scan_arg_end (s, e, b + 1);
+            db = b + 1;
+            dt = de;
+            trim_range (s, &db, &dt);
+            dflt = xstrndup (s + db, dt - db);
+            b    = de;
+            seen_default = 1;
+        }
+        else if (!variadic && seen_default)
+        {
+            pp_error (p, (int) b + 1, "parameter '%s' needs a default (an earlier one has one)", pname);
+            free (pname);
+            smac_free (m);
+            return (NULL);
+        }
+
+        m -> pnames   = xrealloc (m -> pnames,   (size_t) (m -> nparams + 1) * sizeof (char *));
+        m -> defaults = xrealloc (m -> defaults, (size_t) (m -> nparams + 1) * sizeof (char *));
+        m -> pnames[m -> nparams]   = pname;
+        m -> defaults[m -> nparams] = dflt;
+        m -> nparams++;
+
+        if (variadic)
+        {
+            m -> variadic = 1;
+
+            if (skip_ws (s, e, b) != e)
+            {
+                pp_error (p, (int) b + 1, "the variadic parameter must be the last one");
+                smac_free (m);
+                return (NULL);
+            }
+
+            break;
+        }
+
+        if (b >= e)
+        {
+            break;
+        }
+
+        if (s[b] != ',')
+        {
+            pp_error (p, (int) b + 1, "expected ',' in the parameter list");
+            smac_free (m);
+            return (NULL);
+        }
+
+        b++;
+    }
+
+    {
+        int  fixed = m -> nparams - (m -> variadic ? 1 : 0);
+
+        for (k = 0; k < fixed; k++)
+        {
+            if (m -> defaults[k] == NULL)
+            {
+                m -> min = k + 1;
+            }
+        }
+
+        m -> max = m -> variadic ? -1 : fixed;
+    }
+
+    return (m);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// Expansion contexts
+//
+static ctx_t  *ctx_push (pp_t *p, int kind, frame_t *f)
+{
+    ctx_t  *c;
+
+    if (p -> nctx == p -> capctx)
+    {
+        p -> capctx = p -> capctx ? p -> capctx * 2 : 16;
+        p -> ctx    = xrealloc (p -> ctx, (size_t) p -> capctx * sizeof (ctx_t));
+    }
+
+    c = &p -> ctx[p -> nctx++];
+    memset (c, 0, sizeof (*c));
+    c -> kind        = kind;
+    c -> start_ncond = f -> ncond;
+    c -> frame       = f;
+    c -> line        = f -> line;
+
+    return (c);
+}
+
+static int  ctx_find (const pp_t *p, int kind)
+{
+    int  i;
+
+    for (i = p -> nctx - 1; i >= 0; i--)
+    {
+        if (p -> ctx[i].kind == kind)
+        {
+            return (i);
+        }
+    }
+
+    return (-1);
+}
+
+// the lowest %if depth a %else/%elif/%endif in this frame may touch
+static int  cond_base (const pp_t *p, const frame_t *f)
+{
+    if (p -> nctx > 0 && p -> ctx[p -> nctx - 1].frame == (const void *) f)
+    {
+        return (p -> ctx[p -> nctx - 1].start_ncond);
+    }
+
+    return (0);
+}
+
+static void  cap_reset (pp_t *p)
+{
+    int  i;
+
+    for (i = 0; i < p -> cap.n; i++)
+    {
+        free (p -> cap.line[i]);
+    }
+
+    free (p -> cap.line);
+    free (p -> cap.lineno);
+    smac_free (p -> cap.m);
+    memset (&p -> cap, 0, sizeof (p -> cap));
+}
+
+// A macro / %rep body that did not end where it began, or conditionals left open
+static void  ctx_balance (pp_t *p, frame_t *f)
+{
+    ctx_t  *c = &p -> ctx[p -> nctx - 1];
+
+    if (p -> cap.kind != CTX_NONE && p -> cap.nctx == p -> nctx && p -> cap.nframes == p -> nframes)
+    {
+        pp_error_at (p, p -> cap.start, 0, "unterminated %s inside the expansion",
+                     p -> cap.kind == CTX_MACRO ? "%macro" : "%rep");
+        cap_reset (p);
+    }
+
+    if (f -> ncond > c -> start_ncond)
+    {
+        if (!p -> unwind)
+        {
+            pp_error (p, 0, "unterminated %%if inside the %s (no matching %%endif)",
+                      c -> kind == CTX_MACRO ? "macro" : "%rep block");
+        }
+
+        f -> ncond = c -> start_ncond;
+    }
+}
+
+static void  ctx_leave (pp_t *p, frame_t *f)
+{
+    ctx_t  *c;
+
+    ctx_balance (p, f);
+
+    c = &p -> ctx[p -> nctx - 1];
+
+    if (p -> unwind == c -> kind)
+    {
+        p -> unwind = 0;
+    }
+
+    free_args (c -> args, c -> nargs);
+    p -> nctx--;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// Substituting arguments into a body line
+//
+static int  line_directive (const char *s, size_t n, char *name, size_t size)
+{
+    size_t  i = skip_ws (s, n, 0);
+    size_t  j;
+
+    if (i >= n || s[i] != '%')
+    {
+        return (0);
+    }
+
+    i = skip_ws (s, n, i + 1);
+
+    if (i >= n || !is_ident_start ((unsigned char) s[i]))
+    {
+        return (0);
+    }
+
+    for (j = i; j < n && is_ident_char ((unsigned char) s[j]); j++)
+    {
+    }
+
+    if (j - i >= size)
+    {
+        return (0);
+    }
+
+    memcpy (name, s + i, j - i);
+    name[j - i] = 0;
+
+    return (1);
+}
+
+static void  put_joined (buf_t *o, char **v, int from, int n)
+{
+    int  i;
+
+    for (i = from; i < n; i++)
+    {
+        if (i > from)
+        {
+            buf_put (o, ", ", 2);
+        }
+
+        buf_puts (o, v[i]);
+    }
+}
+
+// Writes the text of "%N" for the macro running as mc
+static int  positional (const ctx_t *mc, long idx, int lenient, buf_t *o, char *err, size_t errsize)
+{
+    if (idx == 0)
+    {
+        char  num[16];
+
+        snprintf (num, sizeof (num), "%d", mc -> nargs);
+        buf_puts (o, num);
+        return (0);
+    }
+
+    if (idx > mc -> nargs)
+    {
+        if (lenient || (mc -> m -> max >= 0 && idx <= mc -> m -> max))
+        {
+            return (0);                             // a skipped line, or an optional argument left out
+        }
+
+        snprintf (err, errsize, "macro '%s' was given only %d argument%s, so %%%ld has no value",
+                  mc -> m -> name, mc -> nargs, mc -> nargs == 1 ? "" : "s", idx);
+        return (-1);
+    }
+
+    buf_puts (o, mc -> args[(idx - 1 + mc -> rot) % mc -> nargs]);
+
+    return (0);
+}
+
+// Copies s with the macro's parameters, %N, %0, %* and %%labels replaced. mc may be NULL
+// (a top-level %rep has only the %%labels).
+static int  subst_line (const ctx_t *mc, unsigned serial, int iter, int in_message, int lenient, const char *s, size_t n,
+                        buf_t *o, char *err, size_t errsize)
+{
+    size_t  i = 0;
+
+    while (i < n)
+    {
+        char  c = s[i];
+
+        if (c == ';')
+        {
+            buf_put (o, s + i, n - i);
+            break;
+        }
+
+        if (c == '"')
+        {
+            size_t  e = skip_string (s, n, i);
+
+            if (in_message)
+            {
+                size_t  k;
+
+                for (k = i; k < e; k++)
+                {
+                    if (mc != NULL && s[k] == '%' && k + 1 < e && (isdigit ((unsigned char) s[k + 1]) || s[k + 1] == '*'))
+                    {
+                        if (s[k + 1] == '*')
+                        {
+                            put_joined (o, mc -> args, 0, mc -> nargs);
+                            k++;
+                        }
+                        else
+                        {
+                            char  *end;
+                            long   idx = strtol (s + k + 1, &end, 10);
+
+                            if (positional (mc, idx, lenient, o, err, errsize) != 0)
+                            {
+                                return (-1);
+                            }
+
+                            k = (size_t) (end - s) - 1;
+                        }
+                    }
+                    else
+                    {
+                        buf_put (o, s + k, 1);
+                    }
+                }
+            }
+            else
+            {
+                buf_put (o, s + i, e - i);
+            }
+
+            i = e;
+            continue;
+        }
+
+        if (c == '\'')
+        {
+            size_t  k = char_literal_len (s, n, i);
+
+            if (k == 0)
+            {
+                k = 1;
+            }
+
+            buf_put (o, s + i, k);
+            i += k;
+            continue;
+        }
+
+        if (c == '%' && i + 1 < n)
+        {
+            if (s[i + 1] == '%' && i + 2 < n && is_ident_char ((unsigned char) s[i + 2]))
+            {
+                size_t  e = i + 2;
+                char    pre[32];
+
+                while (e < n && is_ident_char ((unsigned char) s[e]))
+                {
+                    e++;
+                }
+
+                snprintf (pre, sizeof (pre), "__M%u_", serial);
+                buf_puts (o, pre);
+                buf_put  (o, s + i + 2, e - i - 2);
+                i = e;
+                continue;
+            }
+
+            if (s[i + 1] == '@')
+            {
+                if (iter > 0)
+                {
+                    char  num[16];
+
+                    snprintf (num, sizeof (num), "%d", iter);
+                    buf_puts (o, num);
+                }
+                else if (!lenient)
+                {
+                    snprintf (err, errsize, "%%@ is only meaningful inside a %%rep block");
+                    return (-1);
+                }
+
+                i += 2;
+                continue;
+            }
+
+            if (mc != NULL && s[i + 1] == '*')
+            {
+                put_joined (o, mc -> args, 0, mc -> nargs);
+                i += 2;
+                continue;
+            }
+
+            if (mc != NULL && isdigit ((unsigned char) s[i + 1]))
+            {
+                char  *end;
+                long   idx = strtol (s + i + 1, &end, 10);
+
+                if (positional (mc, idx, lenient, o, err, errsize) != 0)
+                {
+                    return (-1);
+                }
+
+                i = (size_t) (end - s);
+                continue;
+            }
+        }
+
+        if (isdigit ((unsigned char) c))
+        {
+            size_t  e = skip_number (s, n, i);
+
+            if (e == i)
+            {
+                e = i + 1;
+            }
+
+            buf_put (o, s + i, e - i);
+            i = e;
+            continue;
+        }
+
+        if (is_ident_start ((unsigned char) c))
+        {
+            size_t  e = i;
+            int     k;
+            int     hit = -1;
+
+            while (e < n && is_ident_char ((unsigned char) s[e]))
+            {
+                e++;
+            }
+
+            if (mc != NULL && !(i > 0 && s[i - 1] == '.'))
+            {
+                for (k = 0; k < mc -> m -> nparams; k++)
+                {
+                    if (mc -> m -> pnames[k] != NULL && strlen (mc -> m -> pnames[k]) == e - i
+                        && memcmp (mc -> m -> pnames[k], s + i, e - i) == 0)
+                    {
+                        hit = k;
+                        break;
+                    }
+                }
+            }
+
+            if (hit < 0)
+            {
+                buf_put (o, s + i, e - i);
+            }
+            else if (mc -> m -> variadic && hit == mc -> m -> nparams - 1)
+            {
+                put_joined (o, mc -> args, hit, mc -> nargs);
+            }
+            else if (hit < mc -> nargs)
+            {
+                buf_puts (o, mc -> args[hit]);
+            }
+
+            i = e;
+            continue;
+        }
+
+        buf_put (o, &c, 1);
+        i++;
+    }
+
+    if (o -> s == NULL)
+    {
+        buf_init (o, "", 0);
+    }
+
+    return (0);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// Running a body
+//
+// Lines inside a nested %rep stay raw until that %rep runs, so that %rotate and the
+// per-iteration %%labels see the right values.
+//
+static void  feed_lines (pp_t *p, frame_t *f, char **line, int n, unsigned iter_serial)
+{
+    int  k;
+    int  depth = 0;
+    int  mi    = ctx_find (p, CTX_MACRO);
+    int  ri    = ctx_find (p, CTX_REP);
+
+    for (k = 0; k < n; k++)
+    {
+        const char  *text = line[k];
+        size_t       len  = strlen (text);
+        buf_t        b    = { 0 };
+        char         nm[16];
+        int          has  = line_directive (text, len, nm, sizeof (nm));
+
+        if (depth == 0)
+        {
+            char  err[200];
+            int   msg = has && (strcasecmp (nm, "error") == 0 || strcasecmp (nm, "warning") == 0);
+            int   lenient = !frame_active (f);
+
+            // an %elif is only looked at when no earlier branch was taken
+            if (has && strncasecmp (nm, "elif", 4) == 0 && f -> ncond > 0)
+            {
+                lenient = (!f -> cond[f -> ncond - 1].parent_active || f -> cond[f -> ncond - 1].taken);
+            }
+
+            if (subst_line (mi >= 0 ? &p -> ctx[mi] : NULL, mi >= 0 ? p -> ctx[mi].serial : iter_serial,
+                            ri >= 0 ? p -> ctx[ri].iter : 0, msg,
+                            lenient, text, len, &b, err, sizeof (err)) != 0)
+            {
+                pp_error (p, 0, "%s", err);
+                free (b.s);
+                continue;
+            }
+
+            text = b.s;
+            len  = b.len;
+        }
+
+        if (has && strcasecmp (nm, "rep") == 0)
+        {
+            depth++;
+        }
+        else if (has && strcasecmp (nm, "endrep") == 0 && depth > 0)
+        {
+            depth--;
+        }
+
+        if (++p -> work > MAX_WORK_LINES)
+        {
+            pp_error (p, 0, "too much macro / %%rep expansion (more than %u lines): runaway loop?", MAX_WORK_LINES);
+            p -> halt = 1;
+            free (b.s);
+            return;
+        }
+
+        process_line (p, text, len);
+        free (b.s);
+
+        if (p -> unwind || p -> halt)
+        {
+            return;
+        }
+    }
+}
+
+// takes over args
+static void  exec_macro (pp_t *p, frame_t *f, smacro_t *m, char **args, int nargs)
+{
+    ctx_t  *c;
+
+    if (p -> nctx >= MAX_CTX_DEPTH)
+    {
+        pp_error (p, 0, "macro expansion is nested too deeply (is '%s' recursive?)", m -> name);
+        free_args (args, nargs);
+        return;
+    }
+
+    c = ctx_push (p, CTX_MACRO, f);
+    c -> m      = m;
+    c -> args   = args;
+    c -> nargs  = nargs;
+    c -> serial = ++p -> serial;
+
+    feed_lines (p, f, m -> body, m -> nbody, 0);
+    ctx_leave  (p, f);
+}
+
+static void  exec_rep (pp_t *p, frame_t *f, long count, char **line, int n)
+{
+    long  it;
+
+    if (p -> nctx >= MAX_CTX_DEPTH)
+    {
+        pp_error (p, 0, "%%rep is nested too deeply");
+        return;
+    }
+
+    ctx_push (p, CTX_REP, f);
+
+    for (it = 1; it <= count; it++)
+    {
+        unsigned  errors = p -> errors;
+
+        p -> ctx[p -> nctx - 1].iter = (int) it;
+        feed_lines (p, f, line, n, ++p -> serial);
+        ctx_balance (p, f);
+
+        if (p -> errors != errors)
+        {
+            break;                              // one report is enough, not one per iteration
+        }
+
+        if (p -> unwind == CTX_REP)
+        {
+            break;
+        }
+
+        if (p -> unwind || p -> halt)
+        {
+            break;
+        }
+    }
+
+    ctx_leave (p, f);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// Capturing a body
+//
+static void  cap_begin (pp_t *p, frame_t *f, int kind, smacro_t *m, long count)
+{
+    cap_reset (p);
+
+    p -> cap.kind    = kind;
+    p -> cap.m       = m;
+    p -> cap.count   = count;
+    p -> cap.nframes = p -> nframes;
+    p -> cap.nctx    = p -> nctx;
+    p -> cap.start   = f -> line;
+    p -> cap.file    = f -> name;
+}
+
+static void  cap_add (pp_t *p, const char *s, size_t n, int lineno)
+{
+    capture_t  *c = &p -> cap;
+
+    if (c -> n == c -> cap)
+    {
+        c -> cap    = c -> cap ? c -> cap * 2 : 16;
+        c -> line   = xrealloc (c -> line,   (size_t) c -> cap * sizeof (char *));
+        c -> lineno = xrealloc (c -> lineno, (size_t) c -> cap * sizeof (int));
+    }
+
+    c -> line[c -> n]   = xstrndup (s, n);
+    c -> lineno[c -> n] = lineno;
+    c -> n++;
+}
+
+// Takes one raw line while a body is being captured
+static void  cap_feed (pp_t *p, frame_t *f, const char *s, size_t n)
+{
+    capture_t  *c = &p -> cap;
+    char        nm[16];
+    int         has = line_directive (s, n, nm, sizeof (nm));
+    int         opener = 0;
+    int         closer = 0;
+
+    if (has)
+    {
+        if (c -> kind == CTX_MACRO)
+        {
+            opener = (strcasecmp (nm, "macro") == 0 || strcasecmp (nm, "imacro") == 0);
+            closer = (strcasecmp (nm, "endmacro") == 0);
+        }
+        else
+        {
+            opener = (strcasecmp (nm, "rep") == 0);
+            closer = (strcasecmp (nm, "endrep") == 0);
+        }
+    }
+
+    if (closer && c -> depth > 0)
+    {
+        c -> depth--;
+    }
+    else if (closer)
+    {
+        capture_t  done = *c;
+
+        memset (c, 0, sizeof (*c));                 // the body now belongs to `done`
+
+        if (done.kind == CTX_MACRO)
+        {
+            if (done.m != NULL)
+            {
+                done.m -> body  = done.line;
+                done.m -> bline = done.lineno;
+                done.m -> nbody = done.n;
+                done.line   = NULL;
+                done.lineno = NULL;
+                done.n      = 0;
+
+                if (smac_add (p, done.m, done.start) == 0)
+                {
+                    done.m = NULL;                  // now owned by the table
+                }
+            }
+        }
+        else if (done.count > 0)
+        {
+            exec_rep (p, f, done.count, done.line, done.n);
+        }
+
+        p -> cap = done;
+        p -> cap.kind = CTX_NONE;
+        cap_reset (p);
+        return;
+    }
+
+    if (opener)
+    {
+        c -> depth++;
+    }
+
+    cap_add (p, s, n, f -> line);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// Invoking a macro: [labels] NAME arg, arg ...
+//
+static int  try_invoke (pp_t *p, frame_t *f, const char *s, size_t n)
+{
+    size_t      i = skip_ws (s, n, 0);
+    size_t      prefix_end = 0;
+    size_t      b;
+    size_t      e;
+    size_t      a;
+    smacro_t   *m;
+    smacro_t   *first;
+    int         any = 0;
+    char      **av = NULL;
+    int         nav = 0;
+    char      **args;
+    int         nargs;
+    int         k;
+
+    if (p -> standard)
+    {
+        return (0);
+    }
+
+    // leading labels
+    for (;;)
+    {
+        size_t  j = i;
+
+        if (j < n && (s[j] == '.' || is_ident_start ((unsigned char) s[j])))
+        {
+            j++;
+
+            while (j < n && is_ident_char ((unsigned char) s[j]))
+            {
+                j++;
+            }
+
+            if (j < n && s[j] == ':')
+            {
+                i = skip_ws (s, n, j + 1);
+                prefix_end = j + 1;
+                continue;
+            }
+        }
+
+        break;
+    }
+
+    b = i;
+
+    if (b >= n || !is_ident_start ((unsigned char) s[b]))
+    {
+        return (0);
+    }
+
+    e = b;
+
+    while (e < n && is_ident_char ((unsigned char) s[e]))
+    {
+        e++;
+    }
+
+    if (e < n && !is_ws ((unsigned char) s[e]) && s[e] != ';')
+    {
+        return (0);
+    }
+
+    first = smac_pick (p, s + b, e - b, -1, &any);
+
+    if (!any)
+    {
+        return (0);
+    }
+
+    a = find_comment (s, n, e);
+    split_args (s + e, a - e, &av, &nav);
+
+    m = smac_pick (p, s + b, e - b, nav, NULL);
+
+    if (prefix_end > 0)
+    {
+        emit_line (p, f, s, prefix_end);
+    }
+
+    if (m == NULL)
+    {
+        char  want[48];
+
+        if (first -> max < 0)
+        {
+            snprintf (want, sizeof (want), "at least %d", first -> min);
+        }
+        else if (first -> max == first -> min)
+        {
+            snprintf (want, sizeof (want), "%d", first -> min);
+        }
+        else
+        {
+            snprintf (want, sizeof (want), "%d to %d", first -> min, first -> max);
+        }
+
+        pp_error (p, 0, "macro '%s' takes %s argument%s, but %d given", first -> name, want,
+                  first -> min == 1 && first -> max == 1 ? "" : "s", nav);
+        free_args (av, nav);
+        return (1);
+    }
+
+    // the actual arguments: the named ones (defaults filling the gaps), then any extras
+    {
+        int  fixed = m -> nparams - (m -> variadic ? 1 : 0);
+
+        args  = NULL;
+        nargs = 0;
+
+        for (k = 0; k < fixed; k++)
+        {
+            const char  *v = NULL;
+
+            if (k < nav && av[k][0] != 0)
+            {
+                v = av[k];
+            }
+            else if (m -> defaults[k] != NULL)
+            {
+                v = m -> defaults[k];
+            }
+            else if (k < nav)
+            {
+                v = av[k];
+            }
+            else
+            {
+                v = "";
+            }
+
+            args = xrealloc (args, (size_t) (nargs + 1) * sizeof (char *));
+            args[nargs++] = xstrndup (v, strlen (v));
+        }
+
+        for (k = fixed; k < nav; k++)
+        {
+            args = xrealloc (args, (size_t) (nargs + 1) * sizeof (char *));
+            args[nargs++] = xstrndup (av[k], strlen (av[k]));
+        }
+    }
+
+    free_args (av, nav);
+    exec_macro (p, f, m, args, nargs);
+
+    return (1);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// Operand tests: %ifreg %ifnum %ifstr %iflabel %ifport %ifidn %ifidni %ifempty %ifmacro
+// (and their negations %ifnreg ..., %elifreg ...)
+//
+enum { P_NONE = 0, P_REG, P_SYSREG, P_NUM, P_STR, P_LABEL, P_PORT, P_IDN, P_IDNI, P_EMPTY, P_MACRO, P_CTX };
+
+static int  pred_kind (const char *w)
+{
+    static const struct { const char *name; int kind; } t[] =
+    {
+        { "reg", P_REG }, { "sysreg", P_SYSREG }, { "num", P_NUM }, { "str", P_STR },
+        { "label", P_LABEL }, { "port", P_PORT }, { "idn", P_IDN }, { "idni", P_IDNI },
+        { "empty", P_EMPTY }, { "macro", P_MACRO }, { "ctx", P_CTX }
+    };
+    size_t  i;
+
+    for (i = 0; i < sizeof (t) / sizeof (t[0]); i++)
+    {
+        if (strcasecmp (w, t[i].name) == 0)
+        {
+            return (t[i].kind);
+        }
+    }
+
+    return (P_NONE);
+}
+
+// "ifreg", "elifnnum", ... ?
+static int  pred_parse (const char *name, int *is_elif, int *neg, int *kind)
+{
+    const char  *w;
+
+    if (strncasecmp (name, "elif", 4) == 0)
+    {
+        *is_elif = 1;
+        w = name + 4;
+    }
+    else if (strncasecmp (name, "if", 2) == 0)
+    {
+        *is_elif = 0;
+        w = name + 2;
+    }
+    else
+    {
+        return (0);
+    }
+
+    *neg  = 0;
+    *kind = pred_kind (w);
+
+    if (*kind == P_NONE && (w[0] == 'n' || w[0] == 'N'))
+    {
+        *neg  = 1;
+        *kind = pred_kind (w + 1);
+    }
+
+    return (*kind != P_NONE);
+}
+
+static int  single_word (const char *t, size_t n)
+{
+    size_t  i;
+
+    if (n == 0)
+    {
+        return (0);
+    }
+
+    for (i = 0; i < n; i++)
+    {
+        if (!is_ident_char ((unsigned char) t[i]))
+        {
+            return (0);
+        }
+    }
+
+    return (1);
+}
+
+// Evaluates the test on the rest of the directive line. -1: an error was reported.
+static int  run_pred (pp_t *p, int kind, int neg, const char *s, size_t n, size_t j, int *value)
+{
+    size_t       b = skip_ws (s, n, j);
+    size_t       e = find_comment (s, n, b);
+    buf_t        x;
+    hides_t      h = { 0 };
+    int          changed = 0;
+    const char  *why = NULL;
+    int          v = 0;
+    size_t       tb;
+    size_t       te;
+    const char  *t;
+    const kw_t  *kw;
+
+    trim_range (s, &b, &e);
+
+    if (kind == P_CTX)
+    {
+        // %ifctx NAME: is the innermost context called that?
+        char  *w = xstrndup (s + b, e - b);
+
+        v = (p -> ncstack > 0 && strcasecmp (p -> cname[p -> ncstack - 1], w) == 0);
+        free (w);
+        *value = v != neg;
+        return (0);
+    }
+
+    if (kind == P_MACRO)
+    {
+        // %ifmacro NAME [argcount]
+        size_t  ne = b;
+        int     any = 0;
+        int     cnt = -1;
+
+        while (ne < e && is_ident_char ((unsigned char) s[ne]))
+        {
+            ne++;
+        }
+
+        if (ne == b)
+        {
+            pp_error (p, (int) b + 1, "expected a macro name");
+            return (-1);
+        }
+
+        if (skip_ws (s, e, ne) < e)
+        {
+            cnt = atoi (s + skip_ws (s, e, ne));
+        }
+
+        v = (smac_pick (p, s + b, ne - b, cnt, &any) != NULL) || (cnt < 0 && any);
+        *value = v != neg;
+        return (0);
+    }
+
+    buf_init (&x, s + b, e - b);
+
+    if (expand_buffer (p, &x, &h, 1, &changed, &why) != 0)
+    {
+        pp_error (p, (int) b + 1, "%s", why);
+        free (x.s);
+        free (h.v);
+        return (-1);
+    }
+
+    free (h.v);
+
+    tb = 0;
+    te = x.len;
+    trim_range (x.s, &tb, &te);
+    t  = x.s + tb;
+    te -= tb;
+    kw = single_word (t, te) ? kw_lookup (t, te) : NULL;
+
+    switch (kind)
+    {
+        case P_EMPTY:
+            v = (te == 0);
+            break;
+
+        case P_REG:
+            v = (kw != NULL && kw -> kind == KW_REGISTER);
+            break;
+
+        case P_SYSREG:
+            v = (kw != NULL && kw -> kind == KW_SYSREG);
+            break;
+
+        case P_PORT:
+            v = (kw != NULL && kw -> kind == KW_PORT);
+            break;
+
+        case P_STR:
+            v = (te >= 2 && t[0] == '"' && skip_string (t, te, 0) == te && t[te - 1] == '"');
+            break;
+
+        case P_LABEL:
+            v = (te >= 1 && (t[0] == '_' || (t[0] == '.' && te > 1)) && single_word (t + (t[0] == '.'), te - (t[0] == '.'))
+                 && kw == NULL);
+            break;
+
+        case P_NUM:
+            if (te > 0 && !(kw != NULL && (kw -> kind == KW_PORT || kw -> kind == KW_REGISTER || kw -> kind == KW_SYSREG)))
+            {
+                ppval_t  pv;
+                char     err[160];
+
+                v = (ppexpr_eval (t, te, &pv, err, sizeof (err)) == 0);
+            }
+            break;
+
+        case P_IDN:
+        case P_IDNI:
+        {
+            size_t  c = scan_arg_end (t, te, 0);
+
+            if (c >= te || scan_arg_end (t, te, c + 1) < te)
+            {
+                pp_error (p, (int) b + 1, "expected two operands separated by a comma");
+                free (x.s);
+                return (-1);
+            }
+
+            {
+                size_t  b1 = 0, e1 = c, b2 = c + 1, e2 = te;
+
+                trim_range (t, &b1, &e1);
+                trim_range (t, &b2, &e2);
+
+                v = (e1 - b1 == e2 - b2)
+                    && (kind == P_IDN ? memcmp (t + b1, t + b2, e1 - b1) == 0
+                                      : strncasecmp (t + b1, t + b2, e1 - b1) == 0);
+            }
+            break;
+        }
+
+        default:
+            break;
+    }
+
+    free (x.s);
+    *value = (v != 0) != neg;
+
+    return (0);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// Helpers for the string directives and %pragma
+//
+// A string literal for text with the given bytes (escapes the scanner understands)
+static void  quote_into (buf_t *o, const char *s, size_t n)
+{
+    size_t  i;
+
+    buf_put (o, "\"", 1);
+
+    for (i = 0; i < n; i++)
+    {
+        unsigned char  c = (unsigned char) s[i];
+
+        if (c == '"' || c == '\\')
+        {
+            buf_put (o, "\\", 1);
+            buf_put (o, s + i, 1);
+        }
+        else if (c == '\n')
+        {
+            buf_put (o, "\\n", 2);
+        }
+        else if (c == '\r')
+        {
+            buf_put (o, "\\r", 2);
+        }
+        else if (c == '\t')
+        {
+            buf_put (o, "\\t", 2);
+        }
+        else if (c < 32 || c == 127)
+        {
+            char  hex[8];
+
+            snprintf (hex, sizeof (hex), "\\x%02X", c);
+            buf_puts (o, hex);
+        }
+        else
+        {
+            buf_put (o, s + i, 1);
+        }
+    }
+
+    buf_put (o, "\"", 1);
+}
+
+// The rest of a directive line (before any comment), macro-expanded, in out
+static int  expand_rest (pp_t *p, const char *s, size_t n, size_t j, buf_t *out)
+{
+    size_t       b = skip_ws (s, n, j);
+    size_t       e = find_comment (s, n, b);
+    hides_t      h = { 0 };
+    int          changed = 0;
+    const char  *why = NULL;
+
+    trim_range (s, &b, &e);
+    buf_init (out, s + b, e - b);
+
+    if (expand_buffer (p, out, &h, 0, &changed, &why) != 0)
+    {
+        pp_error (p, (int) b + 1, "%s", why);
+        free (out -> s);
+        out -> s = NULL;
+        free (h.v);
+        return (-1);
+    }
+
+    free (h.v);
+
+    return (0);
+}
+
+static void  define_string (pp_t *p, const char *name, const char *bytes, size_t n)
+{
+    buf_t  q = { 0 };
+
+    quote_into (&q, bytes, n);
+    macro_set (p, name, q.s);
+    free (q.s);
+}
+
+// Evaluates an integer expression; reports an error and returns -1 otherwise
+static int  eval_int (pp_t *p, const char *t, size_t n, long *out)
+{
+    ppval_t  v;
+    char     err[160];
+    size_t   b = 0;
+    size_t   e = n;
+
+    trim_range (t, &b, &e);
+
+    if (b == e)
+    {
+        pp_error (p, 0, "expected a number");
+        return (-1);
+    }
+
+    if (ppexpr_eval (t + b, e - b, &v, err, sizeof (err)) != 0)
+    {
+        pp_error (p, 0, "%s", err);
+        return (-1);
+    }
+
+    if (v.is_float)
+    {
+        pp_error (p, 0, "expected an integer, not a float");
+        return (-1);
+    }
+
+    *out = (long) v.i;
+
+    return (0);
+}
+
+static void  do_string_directive (pp_t *p, const char *dname, const char *s, size_t n, size_t j)
+{
+    char   *name = expect_ident (p, s, n, &j, "name is missing");
+    buf_t   x    = { 0 };
+    size_t  i    = 0;
+    char   *str;
+
+    if (name == NULL)
+    {
+        return;
+    }
+
+    if (expand_rest (p, s, n, j, &x) != 0)
+    {
+        free (name);
+        return;
+    }
+
+    if (dir_is (p, dname, "defstr"))
+    {
+        define_string (p, name, x.s, x.len);
+    }
+    else if (dir_is (p, dname, "strcat"))
+    {
+        buf_t  all = { 0 };
+        int    ok  = 1;
+
+        for (;;)
+        {
+            str = expect_string (p, x.s, x.len, &i, "expected a string");
+
+            if (str == NULL)
+            {
+                ok = 0;
+                break;
+            }
+
+            buf_puts (&all, str);
+            free (str);
+            i = skip_ws (x.s, x.len, i);
+
+            if (i < x.len && x.s[i] == ',')
+            {
+                i++;
+                continue;
+            }
+
+            if (i < x.len)
+            {
+                pp_error (p, 0, "expected ',' or the end of the line");
+                ok = 0;
+            }
+
+            break;
+        }
+
+        if (ok)
+        {
+            define_string (p, name, all.s ? all.s : "", all.len);
+        }
+
+        free (all.s);
+    }
+    else
+    {
+        // %strlen NAME "text"        %substr NAME "text", start [, length]  (start counts from 1)
+        str = expect_string (p, x.s, x.len, &i, "expected a string");
+
+        if (str != NULL)
+        {
+            size_t  slen = strlen (str);
+
+            i = skip_ws (x.s, x.len, i);
+
+            if (dir_is (p, dname, "strlen"))
+            {
+                if (i < x.len)
+                {
+                    pp_error (p, 0, "expected end of line");
+                }
+                else
+                {
+                    char  num[32];
+
+                    snprintf (num, sizeof (num), "%zu", slen);
+                    macro_set (p, name, num);
+                }
+            }
+            else if (i >= x.len || x.s[i] != ',')
+            {
+                pp_error (p, 0, "expected ',' and a start position");
+            }
+            else
+            {
+                size_t  e1 = scan_arg_end (x.s, x.len, i + 1);
+                long    start = 0;
+                long    len   = -1;
+                int     ok    = (eval_int (p, x.s + i + 1, e1 - (i + 1), &start) == 0);
+
+                if (ok && e1 < x.len)
+                {
+                    ok = (eval_int (p, x.s + e1 + 1, x.len - e1 - 1, &len) == 0);
+                }
+
+                if (ok && (start < 1 || (size_t) start > slen + 1))
+                {
+                    pp_error (p, 0, "the start position %ld is outside the string (1..%zu)", start, slen + 1);
+                    ok = 0;
+                }
+
+                if (ok && (len < -1 || (len >= 0 && (size_t) (start - 1) + (size_t) len > slen)))
+                {
+                    pp_error (p, 0, "the length %ld runs past the end of the string", len);
+                    ok = 0;
+                }
+
+                if (ok)
+                {
+                    size_t  take = (len < 0) ? slen - (size_t) (start - 1) : (size_t) len;
+
+                    define_string (p, name, str + start - 1, take);
+                }
+            }
+
+            free (str);
+        }
+    }
+
+    free (x.s);
+    free (name);
+}
+
+static void  do_include_once (pp_t *p, frame_t *f)
+{
+    if (f -> canon != NULL && !once_contains (p, f -> canon))
+    {
+        p -> once = xrealloc (p -> once, (size_t) (p -> nonce + 1) * sizeof (char *));
+        p -> once[p -> nonce++] = xstrndup (f -> canon, strlen (f -> canon));
+    }
+}
+
+// %pragma once   |   %pragma shadow [NAME, ...]
+static void  do_pragma (pp_t *p, frame_t *f, const char *s, size_t n, size_t j, size_t dstart)
+{
+    char  *what = expect_ident (p, s, n, &j, "expected a pragma name");
+
+    if (what == NULL)
+    {
+        return;
+    }
+
+    if (strcasecmp (what, "once") == 0)
+    {
+        if (expect_eol (p, s, n, j))
+        {
+            do_include_once (p, f);
+        }
+    }
+    else if (strcasecmp (what, "shadow") == 0)
+    {
+        size_t  e = find_comment (s, n, j);
+
+        if (skip_ws (s, e, j) >= e)
+        {
+            p -> shadow_all = 1;
+        }
+        else
+        {
+            for (;;)
+            {
+                char  *nm = expect_ident (p, s, n, &j, "expected a name");
+
+                if (nm == NULL)
+                {
+                    break;
+                }
+
+                p -> shadow = xrealloc (p -> shadow, (size_t) (p -> nshadow + 1) * sizeof (char *));
+                p -> shadow[p -> nshadow++] = nm;
+                j = skip_ws (s, n, j);
+
+                if (j < n && s[j] == ',')
+                {
+                    j++;
+                    continue;
+                }
+
+                expect_eol (p, s, n, j);
+                break;
+            }
+        }
+    }
+    else
+    {
+        pp_warning_at (p, f -> line, (int) dstart + 1, "unknown pragma '%s' ignored", what);
+    }
+
+    free (what);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// Contexts: %push NAME ... %pop. "%$name" is a name private to the innermost context
+// (%$$name: the one below it, ...). That is what makes IF/ELSE/ENDIF macro sets possible.
+//
+static void  ctx_name_push (pp_t *p, const char *name)
+{
+    if (p -> ncstack == p -> capcstack)
+    {
+        p -> capcstack = p -> capcstack ? p -> capcstack * 2 : 8;
+        p -> cname     = xrealloc (p -> cname, (size_t) p -> capcstack * sizeof (char *));
+        p -> cid       = xrealloc (p -> cid,   (size_t) p -> capcstack * sizeof (unsigned));
+    }
+
+    p -> cname[p -> ncstack] = xstrndup (name, strlen (name));
+    p -> cid[p -> ncstack]   = ++p -> cserial;
+    p -> ncstack++;
+}
+
+// Rewrites every %$name in a line as __C<id>_name. Returns 0, or -1 (error reported) if a
+// name refers to a context that does not exist.
+static int  ctx_rewrite (pp_t *p, const char *s, size_t n, buf_t *o, int report)
+{
+    size_t  i = 0;
+
+    while (i < n)
+    {
+        char  c = s[i];
+
+        if (c == ';')
+        {
+            buf_put (o, s + i, n - i);
+            break;
+        }
+
+        if (c == '"')
+        {
+            size_t  e = skip_string (s, n, i);
+
+            buf_put (o, s + i, e - i);
+            i = e;
+            continue;
+        }
+
+        if (c == '\'')
+        {
+            size_t  k = char_literal_len (s, n, i);
+
+            if (k == 0)
+            {
+                k = 1;
+            }
+
+            buf_put (o, s + i, k);
+            i += k;
+            continue;
+        }
+
+        if (c == '%' && i + 1 < n && s[i + 1] == '$')
+        {
+            size_t  e = i + 1;
+            int     up = 0;
+            size_t  ns;
+
+            while (e < n && s[e] == '$')
+            {
+                up++;
+                e++;
+            }
+
+            ns = e;
+
+            while (e < n && is_ident_char ((unsigned char) s[e]))
+            {
+                e++;
+            }
+
+            if (e == ns)
+            {
+                buf_put (o, s + i, e - i);              // "%$" with no name: left alone
+                i = e;
+                continue;
+            }
+
+            if (up > p -> ncstack)
+            {
+                if (report)
+                {
+                    pp_error (p, (int) i + 1, p -> ncstack == 0 ? "%%$%.*s used outside any %%push context"
+                                                                 : "%%$%.*s reaches past the outermost context",
+                              (int) (e - ns), s + ns);
+                    return (-1);
+                }
+
+                buf_put (o, s + i, e - i);
+            }
+            else
+            {
+                char  pre[32];
+
+                snprintf (pre, sizeof (pre), "__C%u_", p -> cid[p -> ncstack - up]);
+                buf_puts (o, pre);
+                buf_put  (o, s + ns, e - ns);
+            }
+
+            i = e;
+            continue;
+        }
+
+        buf_put (o, &c, 1);
+        i++;
+    }
+
+    if (o -> s == NULL)
+    {
+        buf_init (o, "", 0);
+    }
+
+    return (0);
+}
+
 static void  directive (pp_t *p, frame_t *f, const char *s, size_t n, size_t dstart)
 {
     size_t  i = skip_ws (s, n, dstart + 1);
@@ -2335,6 +4561,7 @@ static void  directive (pp_t *p, frame_t *f, const char *s, size_t n, size_t dst
     char    name[32];
     int     active = frame_active (f);
     int     is_cond;
+    int     pe, pn, pk;
 
     // an empty directive ("%" alone) is legal and does nothing
     if (at_eol (s, n, i))
@@ -2365,7 +4592,8 @@ static void  directive (pp_t *p, frame_t *f, const char *s, size_t n, size_t dst
     is_cond = dir_is (p, name, "ifdef") || dir_is (p, name, "ifndef")
            || dir_is (p, name, "else")  || dir_is (p, name, "endif")
            || (!p -> standard && (dir_is (p, name, "if") || dir_is (p, name, "elif")
-                               || dir_is (p, name, "elifdef") || dir_is (p, name, "elifndef")));
+                               || dir_is (p, name, "elifdef") || dir_is (p, name, "elifndef")
+                               || pred_parse (name, &pe, &pn, &pk)));
 
     // inside a skipped block only the conditionals matter (so nesting stays balanced);
     // anything else, even an unknown directive, is dropped
@@ -2380,7 +4608,19 @@ static void  directive (pp_t *p, frame_t *f, const char *s, size_t n, size_t dst
     }
     else if (dir_is (p, name, "define"))
     {
-        do_define (p, s, n, j);
+        do_define (p, s, n, j, 0, 0);
+    }
+    else if (!p -> standard && dir_is (p, name, "idefine"))
+    {
+        do_define (p, s, n, j, 1, 0);
+    }
+    else if (!p -> standard && dir_is (p, name, "xdefine"))
+    {
+        do_define (p, s, n, j, 0, 1);
+    }
+    else if (!p -> standard && dir_is (p, name, "ixdefine"))
+    {
+        do_define (p, s, n, j, 1, 1);
     }
     else if (dir_is (p, name, "undef"))
     {
@@ -2419,7 +4659,7 @@ static void  directive (pp_t *p, frame_t *f, const char *s, size_t n, size_t dst
         {
             cond_open (f, value, 1);                // always opened, even after an error, so %else/%endif stay balanced
         }
-        else if (f -> ncond == 0)
+        else if (f -> ncond <= cond_base (p, f))
         {
             pp_error (p, (int) dstart + 1, "%%%s with no previous %%if", name);
         }
@@ -2458,7 +4698,7 @@ static void  directive (pp_t *p, frame_t *f, const char *s, size_t n, size_t dst
     }
     else if (!p -> standard && dir_is (p, name, "elif"))
     {
-        if (f -> ncond == 0)
+        if (f -> ncond <= cond_base (p, f))
         {
             pp_error (p, (int) dstart + 1, "%%elif with no previous %%if");
         }
@@ -2493,7 +4733,7 @@ static void  directive (pp_t *p, frame_t *f, const char *s, size_t n, size_t dst
     {
         if (expect_eol (p, s, n, j))
         {
-            if (f -> ncond == 0)
+            if (f -> ncond <= cond_base (p, f))
             {
                 pp_error (p, (int) dstart + 1, "%%else with no previous %%if");
             }
@@ -2515,7 +4755,7 @@ static void  directive (pp_t *p, frame_t *f, const char *s, size_t n, size_t dst
     {
         if (expect_eol (p, s, n, j))
         {
-            if (f -> ncond == 0)
+            if (f -> ncond <= cond_base (p, f))
             {
                 pp_error (p, (int) dstart + 1, "%%endif with no previous %%if");
             }
@@ -2546,11 +4786,243 @@ static void  directive (pp_t *p, frame_t *f, const char *s, size_t n, size_t dst
     }
     else if (!p -> standard && dir_is (p, name, "includeonce"))
     {
-        if (expect_eol (p, s, n, j) && f -> canon != NULL && !once_contains (p, f -> canon))
+        if (expect_eol (p, s, n, j))
         {
-            p -> once = xrealloc (p -> once, (size_t) (p -> nonce + 1) * sizeof (char *));
-            p -> once[p -> nonce++] = xstrndup (f -> canon, strlen (f -> canon));
+            do_include_once (p, f);
         }
+    }
+    else if (!p -> standard && pred_parse (name, &pe, &pn, &pk))
+    {
+        int  value = 0;
+
+        if (!pe)
+        {
+            int  parent = frame_active (f);
+
+            if (parent && run_pred (p, pk, pn, s, n, j, &value) != 0)
+            {
+                value = 0;
+            }
+
+            cond_open (f, value, parent);
+        }
+        else if (f -> ncond <= cond_base (p, f))
+        {
+            pp_error (p, (int) dstart + 1, "%%%s with no previous %%if", name);
+        }
+        else if (f -> cond[f -> ncond - 1].else_seen)
+        {
+            pp_error (p, (int) dstart + 1, "%%%s after %%else", name);
+        }
+        else
+        {
+            cond_t  *c = &f -> cond[f -> ncond - 1];
+
+            if (!c -> parent_active || c -> taken)
+            {
+                c -> state = 0;
+            }
+            else
+            {
+                if (run_pred (p, pk, pn, s, n, j, &value) != 0)
+                {
+                    value = 0;
+                }
+
+                c -> state = value;
+                c -> taken = value;
+            }
+        }
+    }
+    else if (!p -> standard && (dir_is (p, name, "macro") || dir_is (p, name, "imacro")))
+    {
+        int        icase = dir_is (p, name, "imacro");
+        char      *mname = expect_ident (p, s, n, &j, "macro name is missing");
+        smacro_t  *m     = NULL;
+
+        if (mname != NULL)
+        {
+            m = smac_parse_header (p, s, n, j, mname, icase);
+            free (mname);
+        }
+
+        cap_begin (p, f, CTX_MACRO, m, 0);                // (a NULL macro: swallow the body quietly)
+    }
+    else if (!p -> standard && dir_is (p, name, "rep"))
+    {
+        ppval_t  v;
+        long     count = -1;
+
+        if (eval_rest (p, s, n, j, &v) == 0)
+        {
+            if (v.is_float)
+            {
+                pp_error (p, (int) dstart + 1, "the %%rep count must be an integer");
+            }
+            else if (v.i < 0)
+            {
+                pp_error (p, (int) dstart + 1, "the %%rep count is negative (%d)", (int) v.i);
+            }
+            else if (v.i > MAX_REP_COUNT)
+            {
+                pp_error (p, (int) dstart + 1, "the %%rep count %d is over the limit of %d", (int) v.i, MAX_REP_COUNT);
+            }
+            else
+            {
+                count = (long) v.i;
+            }
+        }
+
+        cap_begin (p, f, CTX_REP, NULL, count);
+    }
+    else if (!p -> standard && (dir_is (p, name, "endmacro") || dir_is (p, name, "endrep")))
+    {
+        pp_error (p, (int) dstart + 1, "%%%s with no matching %%%s", name,
+                  dir_is (p, name, "endmacro") ? "macro" : "rep");
+    }
+    else if (!p -> standard && (dir_is (p, name, "exitmacro") || dir_is (p, name, "exitrep")))
+    {
+        int  kind = dir_is (p, name, "exitmacro") ? CTX_MACRO : CTX_REP;
+
+        if (expect_eol (p, s, n, j))
+        {
+            if (ctx_find (p, kind) < 0)
+            {
+                pp_error (p, (int) dstart + 1, "%%%s outside a %s", name, kind == CTX_MACRO ? "macro" : "%rep block");
+            }
+            else
+            {
+                p -> unwind = kind;
+            }
+        }
+    }
+    else if (!p -> standard && dir_is (p, name, "rotate"))
+    {
+        int  mi = ctx_find (p, CTX_MACRO);
+
+        if (mi < 0)
+        {
+            pp_error (p, (int) dstart + 1, "%%rotate outside a macro");
+        }
+        else
+        {
+            ppval_t  v;
+
+            if (eval_rest (p, s, n, j, &v) == 0)
+            {
+                ctx_t  *c = &p -> ctx[mi];
+
+                if (v.is_float)
+                {
+                    pp_error (p, (int) dstart + 1, "%%rotate takes an integer");
+                }
+                else if (c -> nargs > 0)
+                {
+                    long  r = ((long) c -> rot + (long) v.i) % c -> nargs;
+
+                    c -> rot = (int) (r < 0 ? r + c -> nargs : r);
+                }
+            }
+        }
+    }
+    else if (!p -> standard && dir_is (p, name, "unmacro"))
+    {
+        char  *mname = expect_ident (p, s, n, &j, "macro name is missing");
+
+        if (mname != NULL)
+        {
+            if (expect_eol (p, s, n, j))
+            {
+                int  count = 0;
+
+                smac_unlink_all (p, mname, strlen (mname), &count);
+
+                if (count == 0)
+                {
+                    pp_warning_at (p, f -> line, (int) dstart + 1, "there is no macro named '%s' to remove", mname);
+                }
+            }
+
+            free (mname);
+        }
+    }
+    else if (!p -> standard && (dir_is (p, name, "strlen") || dir_is (p, name, "substr")
+                                || dir_is (p, name, "strcat") || dir_is (p, name, "defstr")))
+    {
+        do_string_directive (p, name, s, n, j);
+    }
+    else if (!p -> standard && dir_is (p, name, "pragma"))
+    {
+        do_pragma (p, f, s, n, j, dstart);
+    }
+    else if (!p -> standard && dir_is (p, name, "push"))
+    {
+        char  *cn = NULL;
+        size_t k  = skip_ws (s, n, j);
+
+        if (!at_eol (s, n, k))
+        {
+            cn = expect_ident (p, s, n, &j, "expected a context name");
+
+            if (cn == NULL)
+            {
+                return;
+            }
+        }
+
+        if (expect_eol (p, s, n, j))
+        {
+            ctx_name_push (p, cn ? cn : "");
+        }
+
+        free (cn);
+    }
+    else if (!p -> standard && (dir_is (p, name, "pop") || dir_is (p, name, "repl")))
+    {
+        char  *cn = NULL;
+        size_t k  = skip_ws (s, n, j);
+        int    is_pop = dir_is (p, name, "pop");
+
+        if (!at_eol (s, n, k))
+        {
+            cn = expect_ident (p, s, n, &j, "expected a context name");
+
+            if (cn == NULL)
+            {
+                return;
+            }
+        }
+
+        if (!expect_eol (p, s, n, j))
+        {
+        }
+        else if (p -> ncstack == 0)
+        {
+            pp_error (p, (int) dstart + 1, "%%%s with no context (no matching %%push)", name);
+        }
+        else if (!is_pop && cn == NULL)
+        {
+            pp_error (p, (int) dstart + 1, "%%repl needs the new context name");
+        }
+        else if (is_pop)
+        {
+            if (cn != NULL && strcasecmp (cn, p -> cname[p -> ncstack - 1]) != 0)
+            {
+                pp_error (p, (int) dstart + 1, "%%pop %s, but the innermost context is '%s'", cn,
+                          p -> cname[p -> ncstack - 1]);
+            }
+            else
+            {
+                free (p -> cname[--p -> ncstack]);
+            }
+        }
+        else
+        {
+            free (p -> cname[p -> ncstack - 1]);
+            p -> cname[p -> ncstack - 1] = xstrndup (cn, strlen (cn));
+        }
+
+        free (cn);
     }
     else if (dir_is (p, name, "error") || dir_is (p, name, "warning"))
     {
@@ -2588,6 +5060,44 @@ static void  process_line (pp_t *p, const char *s, size_t n)
     frame_t  *f = frame_top (p);
     size_t    i = skip_ws (s, n, 0);
 
+    if (p -> halt)
+    {
+        return;
+    }
+
+    // while a %macro / %rep body is being captured, lines are only stored
+    if (p -> cap.kind != CTX_NONE)
+    {
+        cap_feed (p, f, s, n);
+        return;
+    }
+
+    // %$names of the context stack
+    if (!p -> standard && memchr (s, '$', n) != NULL)
+    {
+        buf_t  r = { 0 };
+        int    rc;
+
+        if (strstr (s, "%$") != NULL)
+        {
+            rc = ctx_rewrite (p, s, n, &r, frame_active (f));
+
+            if (rc == 0 && (r.len != n || memcmp (r.s, s, n) != 0))
+            {
+                process_line (p, r.s, r.len);
+                free (r.s);
+                return;
+            }
+
+            free (r.s);
+
+            if (rc != 0)
+            {
+                return;
+            }
+        }
+    }
+
     // "%eval(...)" at the start of a line is source text that happens to begin with an
     // expression, not a directive
     if (i < n && s[i] == '%' && !(!p -> standard && inline_eval_paren (s, n, i)))
@@ -2598,7 +5108,10 @@ static void  process_line (pp_t *p, const char *s, size_t n)
 
     if (frame_active (f))
     {
-        emit_line (p, f, s, n);
+        if (!try_invoke (p, f, s, n))
+        {
+            emit_line (p, f, s, n);
+        }
     }
 }
 
@@ -2641,6 +5154,15 @@ static unsigned  process_text (pp_t *p, const char *name, const char *text, size
         pos = (end < len) ? end + 1 : end;
     }
 
+    // a body that was still being captured when this file ended
+    if (p -> cap.kind != CTX_NONE && p -> cap.nframes == p -> nframes)
+    {
+        pp_error_at (p, p -> cap.start, 0, "unterminated %s (no matching %s before end of file)",
+                     p -> cap.kind == CTX_MACRO ? "%macro" : "%rep",
+                     p -> cap.kind == CTX_MACRO ? "%endmacro" : "%endrep");
+        cap_reset (p);
+    }
+
     // frame_top() is still f here: includes pop their own frame before returning.
     // (The stock assembler lets an unterminated block pass without a word.)
     for (k = f -> ncond - 1; k >= 0; k--)
@@ -2657,6 +5179,17 @@ static unsigned  process_text (pp_t *p, const char *name, const char *text, size
         }
     }
 
+    if (p -> nframes == 1 && p -> ncstack > 0)
+    {
+        pp_error_at (p, f -> line, 0, "unterminated %%push context '%s' (no matching %%pop before end of file)",
+                     p -> cname[p -> ncstack - 1]);
+
+        while (p -> ncstack > 0)
+        {
+            free (p -> cname[--p -> ncstack]);
+        }
+    }
+
     frame_pop (p);
 
     return (p -> errors - before);
@@ -2670,6 +5203,11 @@ unsigned  pp_process (pp_t *p, const char *name, const char *text, size_t len)
 void  pp_stream_begin (pp_t *p, const char *name)
 {
     frame_push (p, name);
+}
+
+int  pp_pending (const pp_t *p)
+{
+    return (p -> cap.kind != CTX_NONE || (p -> nframes > 0 && p -> frames[p -> nframes - 1] -> ncond > 0));
 }
 
 unsigned  pp_stream_line (pp_t *p, const char *line, size_t len, int lineno)
@@ -2698,7 +5236,8 @@ void  pp_write_expanded (const pp_t *p, FILE *fp, int markers)
         const char  *nl = strchr (s, '\n');
         size_t       n  = nl ? (size_t) (nl - s) : strlen (s);
 
-        if (markers && (p -> map[k].file != file || p -> map[k].line != next))
+        if (markers && (p -> map[k].file != file
+                        || (p -> map[k].line != next && !(p -> map[k].expanded && p -> map[k].line == next - 1))))
         {
             fprintf (fp, "# %d \"%s\"\n", p -> map[k].line, p -> map[k].file);
         }

@@ -1,0 +1,19 @@
+_main:
+    mov R1, 3
+_a:
+    isub R1, 1
+    jt R1, _a
+    mov R2, 4
+_b:
+    isub R2, 1
+    jt R2, _b
+    jf R3, _c
+    iadd R3, 1
+_c:
+    jf R4, _d
+    iadd R4, 1
+_d:
+_main__again:
+    isub R5, 1
+    jt R5, _main__again
+    hlt

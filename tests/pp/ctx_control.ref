@@ -1,0 +1,22 @@
+_main:
+    jf R1, _else1
+    mov R2, 1
+    jf R3, _else2
+    mov R2, 2
+    jmp _end2
+_else2:
+    mov R2, 3
+_end2:
+    jmp _end1
+_else1:
+    mov R2, 4
+_end1:
+_top3:
+    jf R4, _end3
+    isub R4, 1
+    jf R5, _else4
+    iadd R6, 1
+_else4:
+    jmp _top3
+_end3:
+    hlt

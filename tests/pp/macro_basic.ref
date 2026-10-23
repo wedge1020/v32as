@@ -1,0 +1,21 @@
+_start:
+    imax R1, 0
+    imin R1, 255
+    imax R2, 5
+    imin R2, 255
+    imax R3, 5
+    imin R3, 9
+    imax R4, 0
+    imin R4, 7
+    mov R5, R6
+    mov R6, R5
+    mov R9, 0
+    mov R8, 1
+    mov R8, 2
+    mov R8, 3
+_here:
+    imax R7, 1
+    imin R7, 2
+    integer 1, 2, 3
+    integer -4
+    hlt

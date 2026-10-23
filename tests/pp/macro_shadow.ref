@@ -1,0 +1,3 @@
+    push R1
+    push R2
+    iadd R3, 1

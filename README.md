@@ -6,10 +6,14 @@ lexer  is flex,  the parser  is bison,  and symbols/fixups  live in  hash
 tables instead of bash arrays and `bc`.
 
 ```
-    make          # builds ../bin/v32as  (needs flex, bison, cc; readline optional)
+    make          # builds bin/v32as  (needs flex, bison, cc; readline optional)
     make test     # differential/golden tests (including .debug files) (sh + od + cmp only)
     make install  # copies to ~/bin
+    make archive  # ../v32as-project.zip, without build products
 ```
+
+Layout: `src/` sources (flex, bison, C), `inc/` headers, `lib/` macro libraries for `%include`, `docs/`
+design notes, `tests/`, `experiments/`; `make` puts generated files in `build/` and the tool in `bin/`.
 
 ## Usage
 
@@ -56,7 +60,7 @@ about every such literal; use `--standard`, or drop the leading zero.
 ## Preprocessor
 
 Source is preprocessed before it is assembled (`-E` shows the result). Design notes and roadmap are in
-`PREPROCESSOR.md`. A directive is a line whose first non-blank character is `%`; directive names are
+`docs/PREPROCESSOR.md`. A directive is a line whose first non-blank character is `%`; directive names are
 case-insensitive, macro names are not. Macros are replaced only in code: never inside strings,
 character literals, comments or numbers.
 
@@ -102,8 +106,69 @@ an error (the official tool lets it pass; `--standard` does too, with a warning)
 - **Command line**: `-D NAME[=VALUE]` (value defaults to 1), `-U NAME`, `-I DIR`, `-E` (print the
   preprocessed source with `# line "file"` markers, `-P` without them).
 
+- **`%idefine`, `%xdefine`, `%ixdefine`**: a case-insensitive define; a define whose value is expanded
+  now rather than where it is used; both.
+
+### Macros that write instructions
+
+```
+%macro CLAMP reg, lo=0, hi=255        ; named parameters, with defaults
+    imax  reg, lo
+    imin  reg, hi
+%endmacro
+
+%macro COUNTDOWN reg, count
+    mov   reg, count
+%%top:                                ; private to each expansion (becomes __M<serial>_top)
+    isub  reg, 1
+    jt    reg, %%top
+%endmacro
+
+    CLAMP R3, , 100                   ; invoked like an instruction (labels may come first)
+    COUNTDOWN R1, 10
+```
+
+- **`%macro NAME params` ... `%endmacro`**. Parameters are `name`, `name=default` (a default makes it
+  optional; an empty argument takes the default) and a last `rest...` (or `...`) that takes the remaining
+  arguments. `%macro NAME 2`, `1-3` or `1-*` only fixes how many arguments there are. Inside the body a
+  parameter name, or `%1` `%2` ..., stands for its argument text, `%0` for the number of arguments and `%*`
+  for all of them. Arguments are split at commas outside `()` `[]` `{}` and quotes; `{a, b}` passes a comma
+  as part of one argument. A macro may be defined several times if the argument counts differ; `%unmacro NAME`
+  removes it.
+- A macro name is **case-sensitive** (`%imacro` makes it case-insensitive) and **wins over an instruction** of
+  the same name, with a warning unless `%pragma shadow` (everything) or `%pragma shadow NAME, ...` allows it.
+- **`%rep count` ... `%endrep`** repeats its body (at most 1,000,000 times); `%@` is the iteration number.
+  `%exitrep` leaves the loop. Loops nest and may contain macros and conditionals.
+- **`%exitmacro`** leaves the macro (also from inside `%if` or `%rep`). **`%rotate n`** rotates what `%1`
+  `%2` ... refer to (left for positive `n`), the way to walk a variadic list:
+  `%rep %0` / `push %1` / `%rotate 1` / `%endrep`.
+- **`%%name`** is a label private to one expansion of a macro (one per iteration for a `%rep` outside a macro;
+  inside a macro it is the macro's, so use `%%name_%@` for one label per iteration).
+- **Operand tests**, usable as `%ifXXX` and `%elifXXX`, and negated with `n` (`%ifnreg`):
+  `reg` (a CPU register), `sysreg` (`IP` `IR` `IV`), `num` (a constant expression; a bare port name is not
+  a number), `str` (a string literal), `label` (`_name` or `.name`), `port` (an I/O port name),
+  `idn a, b` / `idni a, b` (the same text, exactly or ignoring case), `empty`, `macro NAME [count]`, `ctx NAME`.
+  The text is macro-expanded first. This is what lets one macro choose between `mov` and `in` according to
+  its operands, and report a bad operand with a real message (`%error "INC wants a register, got %1"`).
+- **Strings**: `%strlen N "text"`, `%substr S "text", start [, length]` (start counts from 1), `%strcat S "a",
+  "b"`, `%defstr S tokens` (the expanded tokens as a string).
+- **Contexts**: `%push name` ... `%pop` (`%repl name` renames). `%$x` is a name private to the innermost
+  context (`%$$x`: the one below), which is what lets macros like `IF` / `ELSE` / `ENDIF` share labels.
+  `%ifctx name` tests the innermost context.
+- **`%pragma once`** (same as `%includeonce`), `%pragma shadow ...`.
+
+`lib/v32as.inc` has ready-made `INC DEC ZERO NEG CLAMP SWAP PUSHALL POPALL WAIT_FRAMES` (all check that their
+operands are registers) and `lib/control.inc` has `IF` / `ELSE` / `ENDIF` and `WHILE` / `ENDWHILE`; use them with
+`-I lib` and `%include "v32as.inc"`.
+
+A macro expansion is limited to 64 levels, and a run to about 4 million replayed lines (runaway `%rep` or
+recursion stops with an error). Errors from inside an expansion are reported at the line of the invocation
+with a `note: in expansion of macro 'X' (defined at file:line)`; `-g` also attributes the generated code to
+the invocation.
+
 Errors and the `-g` file point at the file and line you wrote, also through `%include` and macros (on a
-line where a macro expanded, the column is left out). Multiple input files share one preprocessor state.
+line where a macro expanded, the column is left out). Multiple input files share one preprocessor state
+(macros, defines, contexts).
 
 ## Verification
 
