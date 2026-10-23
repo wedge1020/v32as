@@ -75,6 +75,9 @@ install: all
 	@mkdir -p /home/$(USER)/bin
 	@cp -av bin/$(PROJ) /home/$(USER)/bin/
 
+sysinstall: all
+	@cp -av bin/$(PROJ) /usr/local/bin/
+
 clean:
 	@rm -rvf $(BUILD) bin/$(PROJ) .*.sw[op] *~ core ../v32as-project.zip *.zip *.patch
 
