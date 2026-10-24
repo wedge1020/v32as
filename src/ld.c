@@ -18,7 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define  VERSION      "20261015-dev"
+#define  VERSION      "20261024-dev"
 #define  BIOS_BASE    0x10000000u
 #define  CART_BASE    0x20000000u
 
