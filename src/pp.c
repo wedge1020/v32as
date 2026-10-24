@@ -201,6 +201,8 @@ typedef struct macro
     int            variadic;            // the last parameter is "..." (__VA_ARGS__)
     char         **params;              // nparams names (+ "__VA_ARGS__" when variadic)
     int            icase;               // %idefine: found whatever the case (name stored lower-cased)
+    int            cmdline;             // defined by -D
+    int            force;               // defined by -D!NAME: the command line wins over the file
     struct macro  *next;
 }
 macro_t;
@@ -310,6 +312,19 @@ struct pp
     int        nonce;
     unsigned   counter;             // __COUNTER__
     char      *last_global;         // last global label seen, for .local labels
+
+    // file-local labels seen: the label the assembler gets and how a person writes it
+    struct { char *mangled; char *display; }  *locals;
+    size_t     nlocals;
+    size_t     caplocals;
+    int        locals_sorted;
+
+    // files read by %include (for -MD)
+    char     **deps;
+    size_t     ndeps;
+    size_t     capdeps;
+
+    int        warn_redefine;       // warn when a macro gets a different value
 
     // multi-line macros, %rep
     smacro_t  *smtab[HASH_SIZE];
@@ -495,7 +510,12 @@ void  pp_undefine (pp_t *p, const char *name)
 
 int  pp_define_cmdline (pp_t *p, const char *spec)
 {
-    const char  *eq = strchr (spec, '=');
+    int          force = (spec[0] == '!');
+    const char  *eq;
+    macro_t     *m;
+
+    spec += force;
+    eq    = strchr (spec, '=');
     size_t       n  = eq ? (size_t) (eq - spec) : strlen (spec);
     size_t       i;
     char        *name;
@@ -514,7 +534,9 @@ int  pp_define_cmdline (pp_t *p, const char *spec)
     }
 
     name = xstrndup (spec, n);
-    macro_set (p, name, eq ? eq + 1 : "1");
+    m    = macro_set (p, name, eq ? eq + 1 : "1");
+    m -> cmdline = 1;
+    m -> force   = force;
     free (name);
 
     return (0);
@@ -530,6 +552,7 @@ pp_t  *pp_new (void)
 
     memset (p, 0, sizeof (*p));
     p -> warnings = 1;
+    p -> warn_redefine = 1;
 
     return (p);
 }
@@ -604,6 +627,19 @@ void  pp_free (pp_t *p)
         free (p -> once[i]);
     }
 
+    for (i = 0; i < (int) p -> nlocals; i++)
+    {
+        free (p -> locals[i].mangled);
+        free (p -> locals[i].display);
+    }
+
+    for (i = 0; i < (int) p -> ndeps; i++)
+    {
+        free (p -> deps[i]);
+    }
+
+    free (p -> locals);
+    free (p -> deps);
     free (p -> incdirs);
     free (p -> once);
     free (p -> last_global);
@@ -621,6 +657,82 @@ void  pp_set_standard (pp_t *p, int on)
 void  pp_set_warnings (pp_t *p, int on)
 {
     p -> warnings = on;
+}
+
+void  pp_set_redefine_warning (pp_t *p, int on)
+{
+    p -> warn_redefine = on;
+}
+
+const char  *const  *pp_deps (const pp_t *p, size_t *n)
+{
+    *n = p -> ndeps;
+
+    return ((const char *const *) p -> deps);
+}
+
+static void  dep_add (pp_t *p, const char *path)
+{
+    if (p -> ndeps == p -> capdeps)
+    {
+        p -> capdeps = p -> capdeps ? p -> capdeps * 2 : 16;
+        p -> deps    = xrealloc (p -> deps, p -> capdeps * sizeof (char *));
+    }
+
+    p -> deps[p -> ndeps++] = xstrndup (path, strlen (path));
+}
+
+void  pp_each_define (pp_t *p, void (*cb) (void *ud, const char *name, const char *body), void *ud)
+{
+    int       i;
+    macro_t  *m;
+
+    for (i = 0; i < HASH_SIZE; i++)
+    {
+        for (m = p -> tab[i]; m != NULL; m = m -> next)
+        {
+            if (!m -> is_func)
+            {
+                cb (ud, m -> name, m -> body);
+            }
+        }
+    }
+}
+
+static int  local_cmp (const void *x, const void *y)
+{
+    const char  *const  *p = x, *const  *q = y;
+
+    return (strcmp (*p, *q));
+}
+
+// "_draw__again" -> "_draw.again" when that is what a ".again" under "_draw:" became
+const char  *pp_local_name (pp_t *p, const char *mangled)
+{
+    size_t  lo = 0, hi = p -> nlocals;
+
+    if (!p -> locals_sorted)
+    {
+        // entries are {mangled, display} pairs: sort by the first member
+        qsort (p -> locals, p -> nlocals, 2 * sizeof (char *), local_cmp);
+        p -> locals_sorted = 1;
+    }
+
+    while (lo < hi)
+    {
+        size_t  mid = (lo + hi) / 2;
+        int     c   = strcmp (p -> locals[mid].mangled, mangled);
+
+        if (c == 0)
+        {
+            return (p -> locals[mid].display);
+        }
+
+        if (c < 0)  { lo = mid + 1; }
+        else        { hi = mid; }
+    }
+
+    return (NULL);
 }
 
 void  pp_add_include_dir (pp_t *p, const char *dir)
@@ -1828,6 +1940,41 @@ static int  expand_buffer (pp_t *p, buf_t *b, hides_t *hides, int depth, int *ch
 // A global label is any "_name:". The expansion is an ordinary label, so everything
 // downstream (symbol table, debug file) sees plain names.
 //
+static void  local_note (pp_t *p, const char *name, size_t n)
+{
+    size_t  g = strlen (p -> last_global);
+    char   *mangled = xrealloc (NULL, g + 2 + n + 1);
+    char   *display = xrealloc (NULL, g + 1 + n + 1);
+
+    memcpy (mangled, p -> last_global, g);
+    memcpy (mangled + g, "__", 2);
+    memcpy (mangled + g + 2, name, n);
+    mangled[g + 2 + n] = 0;
+    memcpy (display, p -> last_global, g);
+    display[g] = '.';
+    memcpy (display + g + 1, name, n);
+    display[g + 1 + n] = 0;
+
+    // the same label is usually written many times; keep one copy
+    if (p -> nlocals > 0 && strcmp (p -> locals[p -> nlocals - 1].mangled, mangled) == 0)
+    {
+        free (mangled);
+        free (display);
+        return;
+    }
+
+    if (p -> nlocals == p -> caplocals)
+    {
+        p -> caplocals = p -> caplocals ? p -> caplocals * 2 : 64;
+        p -> locals    = xrealloc (p -> locals, p -> caplocals * sizeof (p -> locals[0]));
+    }
+
+    p -> locals[p -> nlocals].mangled = mangled;
+    p -> locals[p -> nlocals].display = display;
+    p -> nlocals++;
+    p -> locals_sorted = 0;
+}
+
 static int  localize (pp_t *p, const buf_t *in, buf_t *out)
 {
     const char  *s = in -> s;
@@ -1902,6 +2049,7 @@ static int  localize (pp_t *p, const buf_t *in, buf_t *out)
             buf_puts (out, p -> last_global);
             buf_put  (out, "__", 2);
             buf_put  (out, s + i + 1, j - i - 1);
+            local_note (p, s + i + 1, j - i - 1);
             i = j;
         }
         else
@@ -2330,6 +2478,7 @@ static void  do_include (pp_t *p, frame_t *f, const char *s, size_t n, size_t i,
         else
         {
             free (canon);
+            dep_add (p, found);
             process_text (p, found, data.s ? data.s : "", data.len);
         }
     }
@@ -2547,6 +2696,44 @@ static void  do_define (pp_t *p, const char *s, size_t n, size_t j, int icase, i
         free (h.v);
         free (body);
         body = x.s;
+    }
+
+    // a definition meeting an earlier one: the command line may have asked to win, or a
+    // difference may be unintended
+    {
+        macro_t  *old = macro_find (p, name, strlen (name));
+
+        if (old != NULL && old -> force)
+        {
+            int  q;
+
+            for (q = 0; q < proto.nparams + (proto.variadic ? 1 : 0); q++)
+            {
+                free (proto.params[q]);
+            }
+
+            free (proto.params);
+            free (body);
+            free (name);
+            return;
+        }
+
+        if (old != NULL && !p -> standard)
+        {
+            if (old -> cmdline)
+            {
+                pp_warning_at (p, frame_top (p) -> line, 0,
+                               "'%s' redefines the -D definition (-D!%s=VALUE makes the command line win)",
+                               name, name);
+            }
+            else if (p -> warn_redefine
+                     && (old -> is_func != proto.is_func || strcmp (old -> body, body) != 0))
+            {
+                pp_warning_at (p, frame_top (p) -> line, 0,
+                               "macro '%s' redefined with a different value (was '%s') [-Wredefine]",
+                               name, old -> body);
+            }
+        }
     }
 
     m = macro_set_i (p, name, body, icase);

@@ -52,6 +52,13 @@ typedef struct
     int          object;            // -C: write a relocatable object
     const char  *relocs;            // -r FILE: list of address-holding words
     const char  *map;               // --map FILE: compiler debug file to merge into -g
+    const char  *symbols;           // --symbols FILE: label table
+    int          symbols_all;       // --symbols-all: also .local labels and compiler variables
+    int          dep;               // -MD: write a dependency file
+    const char  *dep_file;          // -MF FILE
+    const char  *dep_target;        // -MT TARGET
+    int          dep_phony;         // -MP
+    int          no_redefine;       // -Wno-redefine
 }
 options_t;
 
@@ -89,12 +96,22 @@ static void  usage (FILE *fp)
         "                       code and data) as 'index,value' lines; for relocatable modules\n"
         "      --map=FILE       with -g: FILE is v32cc's debug file (asmfile,asmline,cfile,cline[,func]);\n"
         "                       the .debug file then names the C file and line of each instruction\n"
+        "      --symbols=FILE   write the label table: one 'address,name,kind' line per label (kind F:\n"
+        "                       code, D: data); file-local labels only with --symbols-all, which\n"
+        "                       also lists the compiler's global_* variables (kind V)\n"
+        "      --symbols-all    with --symbols: add 'function.local' labels and global_* variables\n"
+        "  -MD, -MMD            write the files read (%%include, datafile) as a Makefile rule to\n"
+        "                       OUTPUT with a .d extension; -MF FILE names it, -MT TARGET the target,\n"
+        "                       -MP adds an empty rule for each dependency\n"
         "  -T, --text           print a human-readable listing (instruction encodings) instead\n"
         "                       of writing a VBIN; addresses start at 0 unless -b/-c/-O is given\n"
         "  -n, --none           same as --text with no base address\n"
         "  -w, --no-warnings    inhibit all warnings\n"
         "  -D, --define=NAME[=VALUE]\n"
-        "                       predefine a preprocessor symbol (VALUE defaults to 1)\n"
+        "                       predefine a preprocessor symbol (VALUE defaults to 1); a %%define of\n"
+        "                       the same name in the source warns and wins, unless the option is\n"
+        "                       written -D!NAME=VALUE (or --force-define), when the command line wins\n"
+        "  -Wno-redefine        do not warn when a %%define changes a macro's value (-Wredefine: do)\n"
         "  -U, --undef=NAME     remove a predefined symbol (processed in command line order)\n"
         "  -I, --include=DIR    add DIR to the %%include search path (may be repeated)\n"
         "  -E, --preprocess     only run the preprocessor and print the result\n"
@@ -415,6 +432,153 @@ static int  process_source (asm_t *a, pp_t *pp, const options_t *opt, FILE *out,
 
 ////////////////////////////////////////////////////////////////////////////////////////
 //
+// --symbols: the compiler's variables (%define global_NAME number) and local labels
+//
+typedef struct
+{
+    symline_t  *v;
+    size_t      n;
+    size_t      cap;
+}
+symbols_t;
+
+static void  collect_variable (void *ud, const char *name, const char *body)
+{
+    symbols_t      *x = ud;
+    char           *end;
+    unsigned long   v;
+
+    if (strncmp (name, "global_", 7) != 0)
+    {
+        return;
+    }
+
+    while (isspace ((unsigned char) *body))  { body++; }
+
+    if (*body == 0)
+    {
+        return;
+    }
+
+    v = strtoul (body, &end, 0);
+
+    while (isspace ((unsigned char) *end))  { end++; }
+
+    if (end == body || *end != 0 || v > 0xFFFFFFFFul)
+    {
+        return;
+    }
+
+    if (x -> n == x -> cap)
+    {
+        x -> cap = x -> cap ? x -> cap * 2 : 64;
+        x -> v   = realloc (x -> v, x -> cap * sizeof (symline_t));
+    }
+
+    x -> v[x -> n].name = name;
+    x -> v[x -> n].addr = (uint32_t) v;
+    x -> v[x -> n].kind = 'V';
+    x -> n++;
+}
+
+static const char  *local_name (void *ud, const char *name)
+{
+    return (pp_local_name ((pp_t *) ud, name));
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// -MD / -MF / -MT / -MP: the files read, as a Makefile rule
+//
+static void  dep_word (FILE *fp, const char *w)
+{
+    for (; *w; w++)
+    {
+        if (*w == ' ' || *w == '#')  { fputc ('\\', fp); }
+        if (*w == '$')               { fputc ('$', fp); }
+        fputc (*w, fp);
+    }
+}
+
+static int  write_deps (const options_t *opt, const char **files, int nfiles, pp_t *pp, asm_t *a)
+{
+    const char        *target = opt -> dep_target != NULL ? opt -> dep_target : opt -> output;
+    char              *derived = NULL;
+    const char        *path = opt -> dep_file;
+    const char *const *ppd;
+    size_t             nppd, i, k, ndep = 0, cap;
+    const char       **dep;
+    FILE              *fp;
+
+    if (path == NULL)
+    {
+        derived = vbin_name (opt -> output, ".d");
+        path    = derived;
+    }
+
+    ppd = pp_deps (pp, &nppd);
+    cap = (size_t) nfiles + nppd + a -> ndeps + 1;
+    dep = malloc (cap * sizeof (char *));
+
+    // the sources first, then what they pulled in; each file once
+    for (i = 0; i < cap - 1; i++)
+    {
+        const char  *f = i < (size_t) nfiles ? files[i]
+                       : (i < (size_t) nfiles + nppd ? ppd[i - (size_t) nfiles]
+                                                     : a -> deps[i - (size_t) nfiles - nppd]);
+
+        if (strcmp (f, "-") == 0)
+        {
+            continue;
+        }
+
+        for (k = 0; k < ndep && strcmp (dep[k], f) != 0; k++)
+        {
+        }
+
+        if (k == ndep)
+        {
+            dep[ndep++] = f;
+        }
+    }
+
+    fp = fopen (path, "w");
+
+    if (fp == NULL)
+    {
+        fprintf (stderr, "v32as: cannot write '%s': %s\n", path, strerror (errno));
+        free (dep);
+        free (derived);
+        return (2);
+    }
+
+    dep_word (fp, target);
+    fputc (':', fp);
+
+    for (i = 0; i < ndep; i++)
+    {
+        fputs (" \\\n  ", fp);
+        dep_word (fp, dep[i]);
+    }
+
+    fputc ('\n', fp);
+
+    for (i = opt -> dep_phony ? (size_t) nfiles : ndep; i < ndep; i++)
+    {
+        fputc ('\n', fp);
+        dep_word (fp, dep[i]);
+        fputs (":\n", fp);
+    }
+
+    fclose (fp);
+    free (dep);
+    free (derived);
+
+    return (0);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
 // Command line
 //
 static int  legacy_word (const char *arg, options_t *opt)
@@ -450,6 +614,9 @@ int  main (int  argc, char **argv)
         { "relocs",   required_argument, 0, 'r' },
         { "object",   no_argument,       0, 'C' },
         { "map",      required_argument, 0, 1002 },
+        { "symbols",  required_argument, 0, 1003 },
+        { "symbols-all", no_argument,    0, 1004 },
+        { "force-define", required_argument, 0, 1005 },
         { "binary",   no_argument,       0, 'B' },
         { "debug",    optional_argument, 0, 'g' },
         { "origin",   required_argument, 0, 'O' },
@@ -486,7 +653,40 @@ int  main (int  argc, char **argv)
         return (2);
     }
 
-    while ((c = getopt_long (argc, argv, "bcnCTBgwO:o:r:D:U:I:EPsvhV", long_options, NULL)) != -1)
+    // gcc-style dependency options (-MD -MMD -MP -MF file -MT target) are taken out first:
+    // getopt would read them as the option -M
+    {
+        int  w = 1;
+
+        for (i = 1; i < argc; i++)
+        {
+            const char  *x = argv[i];
+
+            if (strcmp (x, "--") == 0)
+            {
+                while (i < argc)  { argv[w++] = argv[i++]; }
+                break;
+            }
+            else if (strcmp (x, "-MD") == 0 || strcmp (x, "-MMD") == 0)  { opt.dep = 1; }
+            else if (strcmp (x, "-MP") == 0)                              { opt.dep_phony = 1; }
+            else if ((strncmp (x, "-MF", 3) == 0 || strncmp (x, "-MT", 3) == 0) && (x[3] || i + 1 < argc))
+            {
+                const char  *val = x[3] ? x + 3 : argv[++i];
+
+                if (x[2] == 'F')  { opt.dep_file = val;  opt.dep = 1; }
+                else              { opt.dep_target = val;  opt.dep = 1; }
+            }
+            else
+            {
+                argv[w++] = argv[i];
+            }
+        }
+
+        argc = w;
+        argv[argc] = NULL;
+    }
+
+    while ((c = getopt_long (argc, argv, "bcnCTBgwO:o:r:D:U:I:W:EPsvhV", long_options, NULL)) != -1)
     {
         switch (c)
         {
@@ -499,6 +699,25 @@ int  main (int  argc, char **argv)
             case 'I':  incdirs[nincdirs++] = optarg;  break;
             case 1001: opt.standard = 1;      break;
             case 1002: opt.map     = optarg;  break;
+            case 1003: opt.symbols = optarg;  break;
+            case 1004: opt.symbols_all = 1;   break;
+            case 1005:
+            {
+                char  *spec = malloc (strlen (optarg) + 2);
+
+                sprintf (spec, "!%s", optarg);
+                mopts[nmopts].arg = spec;  mopts[nmopts++].undef = 0;
+                break;
+            }
+            case 'W':
+                if (strcmp (optarg, "no-redefine") == 0)       { opt.no_redefine = 1; }
+                else if (strcmp (optarg, "redefine") == 0)     { opt.no_redefine = 0; }
+                else
+                {
+                    fprintf (stderr, "v32as: unknown warning option -W%s (use -Wredefine or -Wno-redefine)\n", optarg);
+                    return (2);
+                }
+                break;
             case 'r':  opt.relocs  = optarg;  break;
             case 'C':  opt.object  = 1;       break;
             case 'g':
@@ -660,6 +879,36 @@ int  main (int  argc, char **argv)
         return (2);
     }
 
+    if (opt.symbols_all && !opt.symbols)
+    {
+        fprintf (stderr, "v32as: --symbols-all needs --symbols FILE\n");
+        return (2);
+    }
+
+    if (opt.symbols && (opt.object || opt.preprocess || will_repl))
+    {
+        fprintf (stderr, "v32as: --symbols needs assembled input (use 'v32ld --symbols' for objects)\n");
+        return (2);
+    }
+
+    if (opt.dep && opt.preprocess)
+    {
+        fprintf (stderr, "v32as: -MD cannot be combined with -E\n");
+        return (2);
+    }
+
+    if (opt.dep && (!opt.dep_file && (!opt.binary || opt.output == NULL)))
+    {
+        fprintf (stderr, "v32as: -MD needs -MF FILE, or binary output to a file to name the dependency file after\n");
+        return (2);
+    }
+
+    if (opt.dep && opt.dep_target == NULL && opt.output == NULL)
+    {
+        fprintf (stderr, "v32as: -MD needs -MT TARGET (there is no output file name to use)\n");
+        return (2);
+    }
+
     if (opt.map && !opt.debug)
     {
         fprintf (stderr, "v32as: --map needs -g\n");
@@ -675,6 +924,7 @@ int  main (int  argc, char **argv)
     pp = pp_new ();
     pp_set_standard (pp, opt.standard);
     pp_set_warnings (pp, !opt.no_warn);
+    pp_set_redefine_warning (pp, !opt.no_redefine && !opt.standard);
     pp_set_target   (pp, opt.bios ? "BIOS" : (opt.cart ? "CART" : (opt.origin_set ? "ORIGIN" : "NONE")),
                      opt.origin_set ? opt.origin : (opt.bios ? BIOS_BASE : (opt.cart ? CART_BASE : 0)));
 
@@ -705,6 +955,8 @@ int  main (int  argc, char **argv)
     a.step     = opt.step && !opt.standard;         // official: -s has no effect
     a.standard = opt.standard;
     a.no_warn  = opt.no_warn;
+    a.incdirs  = incdirs;
+    a.nincdirs = nincdirs;
     a.listing  = !opt.binary;
 
     // text output goes out as the assembly proceeds; binary output only after success
@@ -927,6 +1179,41 @@ int  main (int  argc, char **argv)
         {
             fclose (rfp);
         }
+    }
+
+
+    if (rc == 0 && opt.symbols)
+    {
+        symbols_t  ex = { 0 };
+        FILE      *sfp = fopen (opt.symbols, "w");
+
+        if (sfp == NULL)
+        {
+            fprintf (stderr, "v32as: cannot write '%s': %s\n", opt.symbols, strerror (errno));
+            rc = 2;
+        }
+        else
+        {
+            if (opt.symbols_all)
+            {
+                pp_each_define (pp, collect_variable, &ex);
+            }
+
+            if (asm_write_symbols (&a, sfp, opt.symbols_all, local_name, pp, ex.v, ex.n) != 0)
+            {
+                fprintf (stderr, "v32as: cannot write '%s': %s\n", opt.symbols, strerror (errno));
+                rc = 2;
+            }
+
+            fclose (sfp);
+        }
+
+        free (ex.v);
+    }
+
+    if (rc == 0 && opt.dep)
+    {
+        rc = write_deps (&opt, files, nfiles, pp, &a);
     }
 
     if (out != stdout)

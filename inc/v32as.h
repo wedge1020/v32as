@@ -108,6 +108,8 @@ typedef struct sym
     const char   *gfile;            // where 'global' declared it (for diagnostics)
     int           gline;
     int           gcol;
+    char          kind;             // what follows the label: 'F' code, 'D' data (for --symbols)
+    int           pending;          // label defined, kind not yet known
     struct sym   *next;             // hash chain
     struct sym   *order;            // definition/reference order list
 }
@@ -219,6 +221,20 @@ typedef struct asm_ctx
     const srcloc_t  *map;
     size_t           nmap;
 
+    // where 'datafile' looks after the source file's own directory (-I, in order)
+    const char **incdirs;
+    int          nincdirs;
+
+    // files read through 'datafile' (for -MD)
+    char       **deps;
+    size_t       ndeps;
+    size_t       depcap;
+
+    // labels waiting to learn whether code or data follows them (for --symbols)
+    sym_t      **pend;
+    size_t       npend;
+    size_t       pendcap;
+
     int          object;            // -C: write a relocatable object (v32ob), base 0
     int          standard;          // strict official-assembler language (--standard)
     int          no_warn;           // -w
@@ -254,6 +270,22 @@ void    asm_sym_declare     (asm_t *a, const loc_t *loc, sym_t *s, int external)
 int     asm_write_relocs    (asm_t *a, FILE *fp);
 int     asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode, FILE *cmap, const char *cmap_name);
 void    asm_print_labels    (asm_t *a, FILE *fp);
+void    asm_add_dep         (asm_t *a, const char *path);
+
+// --symbols: one "address,name[,kind]" line per label, sorted by address. 'local' maps the
+// assembler-level name of a file-local label to its "function.local" spelling (NULL: the
+// name is not a local label); 'extra' are further lines (the compiler's variables).
+typedef struct
+{
+    const char  *name;
+    uint32_t     addr;
+    char         kind;
+}
+symline_t;
+
+int     asm_write_symbols   (asm_t *a, FILE *fp, int all,
+                             const char *(*local) (void *ud, const char *name), void *local_ud,
+                             const symline_t *extra, size_t nextra);
 
 void    asm_error           (asm_t *a, const loc_t *loc, const char *fmt, ...)
                             __attribute__ ((format (printf, 3, 4)));

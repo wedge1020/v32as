@@ -15,6 +15,27 @@ tables instead of bash arrays and `bc`.
 Layout: `src/` sources (flex, bison, C), `inc/` headers, `lib/` macro libraries for `%include`, `docs/`
 design notes, `tests/`, `experiments/`; `make` puts generated files in `build/` and the tool in `bin/`.
 
+## Round-9 additions (answers to V32AS-PROPOSAL)
+
+- **`datafile` search (VA-1)**: absolute path; the directory of the file holding the directive; each `-I DIR`;
+  the current directory. The error lists the places tried: `cannot open data file "x" (looked in out/, ../data/, .)`.
+  `--standard` keeps the two old places (no `-I`, as for `%include`).
+- **`--symbols FILE` (VA-2)**: `address,name,kind` per label, sorted by address; kind `F` (code follows), `D` (data
+  follows, or nothing). `--symbols-all` adds file-local labels as `function.local` and every `%define global_NAME number`
+  as kind `V`. Not available with `-C` (use `v32ld --symbols`).
+- **`-D` against `%define` (VA-3)**: a `%define` of a `-D` name warns (the file still wins); `-D!NAME=VALUE` or
+  `--force-define NAME=VALUE` makes the command line win. A `%define` that changes a macro's value warns
+  (`-Wredefine`, on by default; `-Wno-redefine`, `-w` and `--standard` silence it).
+- **`--map` (VA-4)**: file names are compared exactly first, then by base name (the longest shared directory tail wins),
+  so `main.asm` in the map matches `out/kernel/main.asm`. If no instruction matches at all, a warning names the
+  names found in the map.
+- **v32ld (VA-5)**: `--symbols FILE`; `-A FILE` makes an archive (`V32-VARC`) of objects; archives given as operands or
+  with `-L DIR -l NAME` (libNAME.a) are mined after the objects, a member being linked only when it defines a symbol still
+  undefined; `--entry SYMBOL` puts a two-word `jmp SYMBOL` first unless the symbol is already the first word;
+  `undefined reference to `x' (first used in a.v32ob)`, once per symbol. Not done: relocatable (`-r` object) output.
+- **`-MD -MMD -MP -MF FILE -MT TARGET` (VA-6)**: the sources, `%include` files and `datafile` files read, as a Makefile rule
+  (default file: the output name with `.d`).
+
 ## Usage
 
 ```

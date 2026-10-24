@@ -166,6 +166,19 @@ void  asm_free (asm_t *a)
     free (a -> fix);
     free (a -> rel);
     free (a -> rec);
+    free (a -> pend);
+
+    while (a -> ndeps > 0)
+    {
+        free (a -> deps[--a -> ndeps]);
+    }
+
+    free (a -> deps);
+
+    a -> pend  = NULL;
+    a -> npend = a -> pendcap = 0;
+    a -> deps  = NULL;
+    a -> depcap = 0;
 
     a -> tab   = NULL;
     a -> words = NULL;
@@ -191,6 +204,8 @@ void  asm_reset (asm_t *a)
     a -> interactive = saved.interactive;
     a -> standard    = saved.standard;
     a -> no_warn     = saved.no_warn;
+    a -> incdirs     = saved.incdirs;
+    a -> nincdirs    = saved.nincdirs;
     a -> out         = saved.out;
     a -> dbg         = saved.dbg;
 }
@@ -259,6 +274,8 @@ sym_t  *asm_sym_intern (asm_t *a, const char *name, size_t n)
     s -> defined   = 0;
     s -> global    = 0;
     s -> external  = 0;
+    s -> kind      = 'D';
+    s -> pending   = 0;
     s -> gfile     = NULL;
     s -> order     = NULL;
     s -> next      = a -> tab[slot];
@@ -304,6 +321,16 @@ void  asm_label_define (asm_t *a, sym_t *s, const loc_t *loc)
     s -> addr    = here (a);
     s -> defined = 1;
 
+    // code or data? the next thing assembled tells (see settle_labels)
+    if (a -> npend == a -> pendcap)
+    {
+        a -> pendcap = a -> pendcap ? a -> pendcap * 2 : 64;
+        a -> pend    = xrealloc (a -> pend, a -> pendcap * sizeof (sym_t *));
+    }
+
+    s -> pending = 1;
+    a -> pend[a -> npend++] = s;
+
     if (a -> verbose)
     {
         fprintf (a -> dbg, "[label] %s at 0x%08X\n", s -> name, s -> addr);
@@ -312,6 +339,18 @@ void  asm_label_define (asm_t *a, sym_t *s, const loc_t *loc)
     if (a -> interactive && a -> listing)
     {
         fprintf (a -> out, "label:       %s = 0x%08X\n", s -> name, s -> addr);
+    }
+}
+
+// the labels defined since the last statement are followed by code ('F') or data ('D')
+static void  settle_labels (asm_t *a, char kind)
+{
+    while (a -> npend > 0)
+    {
+        sym_t  *s = a -> pend[--a -> npend];
+
+        s -> kind    = kind;
+        s -> pending = 0;
     }
 }
 
@@ -684,6 +723,8 @@ void  asm_inst (asm_t *a, const loc_t *loc, unsigned opcode, unsigned r1, unsign
         return;
     }
 
+    settle_labels (a, 'F');
+
     word = ((uint32_t) (opcode & 0x3F) << 26)
          | ((uint32_t) (has_imm ? 1 : 0) << 25)
          | ((uint32_t) (r1 & 0xF)   << 21)
@@ -813,6 +854,8 @@ void  asm_mov_ip_value (asm_t *a, const loc_t *loc, imm_t target)
 //
 void  asm_data_begin (asm_t *a)
 {
+    settle_labels (a, 'D');
+
     a -> line_active = 1;
     a -> stmt_start  = a -> nwords;
     a -> stmt_fix    = a -> nfix;
@@ -865,31 +908,147 @@ void  asm_data_zstring (asm_t *a, str_t s)
     free (s.p);
 }
 
-// open a data file, trying the directory of the current source file first
-static FILE  *open_data_file (asm_t *a, const loc_t *loc, const char *path)
+void  asm_add_dep (asm_t *a, const char *path)
+{
+    if (a -> ndeps == a -> depcap)
+    {
+        a -> depcap = a -> depcap ? a -> depcap * 2 : 16;
+        a -> deps   = xrealloc (a -> deps, a -> depcap * sizeof (char *));
+    }
+
+    a -> deps[a -> ndeps++] = xstrndup (path, strlen (path));
+}
+
+// is item one of the ", "-separated entries of list?
+static int  list_has (const char *list, const char *item)
+{
+    size_t  n = strlen (item);
+
+    while (*list)
+    {
+        const char  *end = strstr (list, ", ");
+        size_t       len = end ? (size_t) (end - list) : strlen (list);
+
+        if (len == n && memcmp (list, item, n) == 0)
+        {
+            return (1);
+        }
+
+        list += len + (end ? 2 : 0);
+    }
+
+    return (0);
+}
+
+// try one candidate; remember where it was looked for (for the error message) and, when
+// it opens, which file it was
+static FILE  *try_data_file (const char *dir, size_t dirlen, const char *path, char **tried,
+                             char **found)
+{
+    size_t  plen = strlen (path);
+    char   *full = xrealloc (NULL, dirlen + 1 + plen + 1);
+    FILE   *fp;
+
+    memcpy (full, dir, dirlen);
+
+    if (dirlen > 0 && dir[dirlen - 1] != '/')
+    {
+        full[dirlen++] = '/';
+    }
+
+    strcpy (full + dirlen, path);
+
+    // the places tried, as "out/, ../data/, ." (a place is listed once)
+    {
+        const char  *place  = dirlen > 0 ? dir : ".";
+        size_t       plc    = dirlen > 0 ? dirlen : 1;
+        char        *label  = xrealloc (NULL, plc + 2);
+        size_t       have   = *tried ? strlen (*tried) : 0;
+
+        memcpy (label, place, plc);
+
+        if (dirlen > 0 && label[plc - 1] != '/')
+        {
+            label[plc++] = '/';
+        }
+
+        label[plc] = 0;
+
+        if (*tried == NULL || !list_has (*tried, label))
+        {
+            *tried = xrealloc (*tried, have + plc + 3);
+            strcpy (*tried + have, have ? ", " : "");
+            strcat (*tried, label);
+        }
+
+        free (label);
+    }
+
+    fp = fopen (full, "rb");
+
+    if (fp != NULL)
+    {
+        *found = full;
+    }
+    else
+    {
+        free (full);
+    }
+
+    return (fp);
+}
+
+// open a data file. The first place that has it wins:
+//   1. an absolute path
+//   2. the directory of the file holding the 'datafile' line
+//   3. each -I directory, in order (not under --standard)
+//   4. the current directory
+// *tried gets the list of places looked in (for the error message)
+static FILE  *open_data_file (asm_t *a, const loc_t *loc, const char *path, char **tried,
+                              char **found)
 {
     const char  *cur;
     int          line;
     int          expanded;
     const char  *slash;
-    FILE        *fp    = NULL;
+    FILE        *fp = NULL;
+    int          i;
+
+    *tried = NULL;
+    *found = NULL;
+
+    if (path[0] == '/')
+    {
+        fp = fopen (path, "rb");
+
+        if (fp != NULL)
+        {
+            *found = xstrndup (path, strlen (path));
+        }
+
+        return (fp);
+    }
 
     // the data file is looked up next to the file the "datafile" line really came from
     asm_resolve (a, loc -> first_line, &cur, &line, &expanded);
     slash = strrchr (cur, '/');
 
-    if (path[0] != '/' && slash != NULL)
+    if (slash != NULL)
     {
-        size_t  dirlen = (size_t) (slash - cur) + 1;
-        char   *full   = xrealloc (NULL, dirlen + strlen (path) + 1);
-
-        memcpy (full, cur, dirlen);
-        strcpy (full + dirlen, path);
-        fp = fopen (full, "rb");
-        free (full);
+        fp = try_data_file (cur, (size_t) (slash - cur) + 1, path, tried, found);
     }
 
-    return (fp != NULL ? fp : fopen (path, "rb"));
+    for (i = 0; fp == NULL && i < a -> nincdirs && !a -> standard; i++)
+    {
+        fp = try_data_file (a -> incdirs[i], strlen (a -> incdirs[i]), path, tried, found);
+    }
+
+    if (fp == NULL)
+    {
+        fp = try_data_file ("", 0, path, tried, found);
+    }
+
+    return (fp);
 }
 
 void  asm_data_file (asm_t *a, const loc_t *loc, str_t path)
@@ -899,6 +1058,7 @@ void  asm_data_file (asm_t *a, const loc_t *loc, str_t path)
     unsigned char  carry[4];
     size_t         carried = 0;
     size_t         got;
+    char          *tried, *found;
 
     if (path.n == 0 || strlen (path.p) != path.n)
     {
@@ -907,14 +1067,27 @@ void  asm_data_file (asm_t *a, const loc_t *loc, str_t path)
         return;
     }
 
-    fp = open_data_file (a, loc, path.p);
+    fp = open_data_file (a, loc, path.p, &tried, &found);
 
     if (fp == NULL)
     {
-        asm_error (a, loc, "cannot open data file \"%s\"", path.p);
+        if (tried != NULL)
+        {
+            asm_error (a, loc, "cannot open data file \"%s\" (looked in %s)", path.p, tried);
+        }
+        else
+        {
+            asm_error (a, loc, "cannot open data file \"%s\"", path.p);
+        }
+
+        free (tried);
         free (path.p);
         return;
     }
+
+    asm_add_dep (a, found);
+    free (found);
+    free (tried);
 
     // the file content becomes consecutive little-endian words
     while ((got = fread (chunk, 1, sizeof (chunk), fp)) > 0)
@@ -1404,6 +1577,97 @@ static char  *norm_path (const char *path)
     return (out);
 }
 
+static const char  *base_of (const char *path)
+{
+    const char  *slash = strrchr (path, '/');
+
+    return (slash ? slash + 1 : path);
+}
+
+// the entries being indexed by baseidx_cmp (qsort has no context argument)
+static const mapent_t  *map_sort_base;
+
+static int  base_key_cmp (const char *fa, int la, const char *fb, int lb)
+{
+    int  c = strcmp (base_of (fa), base_of (fb));
+
+    if (c != 0)
+    {
+        return (c);
+    }
+
+    return (la < lb ? -1 : (la > lb ? 1 : 0));
+}
+
+static int  baseidx_cmp (const void *x, const void *y)
+{
+    const mapent_t  *p = &map_sort_base[*(const size_t *) x], *q = &map_sort_base[*(const size_t *) y];
+
+    return (base_key_cmp (p -> afile, p -> aline, q -> afile, q -> aline));
+}
+
+// how many trailing path components two normalized paths share
+static int  shared_tail (const char *p, const char *q)
+{
+    const char  *pe = p + strlen (p), *qe = q + strlen (q);
+    int          n  = 0;
+
+    for (;;)
+    {
+        const char  *ps = pe, *qs = qe;
+
+        while (ps > p && ps[-1] != '/')  { ps--; }
+        while (qs > q && qs[-1] != '/')  { qs--; }
+
+        if ((size_t) (pe - ps) != (size_t) (qe - qs) || memcmp (ps, qs, (size_t) (pe - ps)) != 0
+            || pe == ps)
+        {
+            return (n);
+        }
+
+        n++;
+
+        if (ps == p || qs == q)
+        {
+            return (n);
+        }
+
+        pe = ps - 1;
+        qe = qs - 1;
+    }
+}
+
+// the map entry for (file, line) when only the file's base name has to agree; among
+// several candidates the one whose directories agree the most wins
+static mapent_t  *map_find_by_base (mapent_t *m, const size_t *bidx, size_t nm, const char *file,
+                                    int line)
+{
+    size_t  lo = 0, hi = nm, k;
+    int     best = -1;
+    size_t  pick = 0;
+
+    while (lo < hi)
+    {
+        size_t  mid = (lo + hi) / 2;
+
+        if (base_key_cmp (m[bidx[mid]].afile, m[bidx[mid]].aline, file, line) < 0)  { lo = mid + 1; }
+        else                                                                         { hi = mid; }
+    }
+
+    for (k = lo; k < nm && base_key_cmp (m[bidx[k]].afile, m[bidx[k]].aline, file, line) == 0; k++)
+    {
+        int  t = shared_tail (m[bidx[k]].afile, file);
+
+        if (t > best)
+        {
+            best = t;
+            pick = bidx[k];
+        }
+    }
+
+    return (best >= 0 ? &m[pick] : NULL);
+}
+
 int  asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode, FILE *cmap, const char *cmap_name)
 {
     mapent_t  *m = NULL;
@@ -1412,6 +1676,8 @@ int  asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode, FILE *cmap, const 
     int        rc = 0;
     uint32_t   base_off = (mode == DBG_V32) ? 0x8C : (mode == DBG_VBIN ? 0x0C : 0);
     uint32_t   unit     = (mode == DBG_PROGRAM) ? 1 : 4;
+    size_t    *bidx;
+    size_t     matched = 0;
 
     while (fgets (line, sizeof (line), cmap) != NULL)
     {
@@ -1464,6 +1730,18 @@ int  asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode, FILE *cmap, const 
 
     qsort (m, nm, sizeof (mapent_t), mapent_cmp);
 
+    // a second index by (base name, line), for assembly files the map names differently
+    // ("main.asm" in the map, "out/kernel/main.asm" on the command line)
+    bidx = xrealloc (NULL, (nm + 1) * sizeof (size_t));
+
+    for (i = 0; i < nm; i++)
+    {
+        bidx[i] = i;
+    }
+
+    map_sort_base = m;
+    qsort (bidx, nm, sizeof (size_t), baseidx_cmp);
+
     for (i = 0; i < a -> nrec; i++)
     {
         const dbgrec_t  *r = &a -> rec[i];
@@ -1475,8 +1753,15 @@ int  asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode, FILE *cmap, const 
         key.aline = r -> line;
         hit       = bsearch (&key, m, nm, sizeof (mapent_t), mapent_cmp);
 
+        if (hit == NULL)
+        {
+            hit = map_find_by_base (m, bidx, nm, file, r -> line);
+        }
+
         if (hit != NULL)
         {
+            matched++;
+
             fprintf (fp, "0x%08X,%s,%d", mode == DBG_PROGRAM ? a -> base + r -> word
                                                              : base_off + r -> word * unit,
                      hit -> cfile, hit -> cline);
@@ -1492,6 +1777,30 @@ int  asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode, FILE *cmap, const 
         free (file);
     }
 
+    // some misses are normal (hand-written lines have no C line); all of them is not
+    if (a -> nrec > 0 && matched == 0 && !a -> no_warn)
+    {
+        const char  *last = NULL;
+        int          shown = 0;
+
+        fprintf (stderr, "v32as: warning: --map %s: no entry matches an instruction of %s "
+                         "(names in the map:", cmap_name, a -> rec[0].file);
+
+        for (i = 0; i < nm && shown < 4; i++)
+        {
+            if (last == NULL || strcmp (last, m[i].afile) != 0)
+            {
+                fprintf (stderr, "%s %s", shown ? "," : "", m[i].afile);
+                last = m[i].afile;
+                shown++;
+            }
+        }
+
+        fprintf (stderr, "%s)\n", nm == 0 ? " none" : (shown >= 4 ? ", ..." : ""));
+    }
+
+    free (bidx);
+
     for (i = 0; i < nm; i++)
     {
         free (m[i].afile);
@@ -1502,6 +1811,83 @@ int  asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode, FILE *cmap, const 
     free (m);
 
     return (rc != 0 || ferror (fp) ? -1 : 0);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// Symbol table (--symbols): "address,name,kind", sorted by address
+//
+//     kind  F  a label followed by code        D  a label followed by data (or nothing)
+//           V  a compiler variable (a %define of a global_* number)
+//
+typedef struct
+{
+    const char  *name;
+    uint32_t     addr;
+    char         kind;
+}
+symrow_t;
+
+static int  symrow_cmp (const void *x, const void *y)
+{
+    const symrow_t  *p = x, *q = y;
+
+    if (p -> addr != q -> addr)
+    {
+        return (p -> addr < q -> addr ? -1 : 1);
+    }
+
+    return (strcmp (p -> name, q -> name));
+}
+
+int  asm_write_symbols (asm_t *a, FILE *fp, int all,
+                        const char *(*local) (void *ud, const char *name), void *local_ud,
+                        const symline_t *extra, size_t nextra)
+{
+    const sym_t  *s;
+    symrow_t     *v = xrealloc (NULL, (a -> nsyms + nextra + 1) * sizeof (symrow_t));
+    size_t        n = 0, i;
+
+    for (s = a -> first; s != NULL; s = s -> order)
+    {
+        const char  *ln;
+
+        if (!s -> defined || s -> external)
+        {
+            continue;
+        }
+
+        ln = local ? local (local_ud, s -> name) : NULL;
+
+        if (ln != NULL && !all)
+        {
+            continue;
+        }
+
+        v[n].name = ln != NULL ? ln : s -> name;
+        v[n].addr = s -> addr;
+        v[n].kind = s -> kind;
+        n++;
+    }
+
+    for (i = 0; all && i < nextra; i++)
+    {
+        v[n].name = extra[i].name;
+        v[n].addr = extra[i].addr;
+        v[n].kind = extra[i].kind;
+        n++;
+    }
+
+    qsort (v, n, sizeof (symrow_t), symrow_cmp);
+
+    for (i = 0; i < n; i++)
+    {
+        fprintf (fp, "0x%08X,%s,%c\n", v[i].addr, v[i].name, v[i].kind);
+    }
+
+    free (v);
+
+    return (ferror (fp) ? -1 : 0);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -1615,7 +2001,8 @@ int  asm_write_object (asm_t *a, FILE *fp)
     for (i = 0; i < nsyms; i++)
     {
         uint32_t  flags = (tab[i] -> defined ? 1 : 0) | (tab[i] -> global ? 2 : 0)
-                        | (tab[i] -> external ? 4 : 0);
+                        | (tab[i] -> external ? 4 : 0)
+                        | (tab[i] -> defined && tab[i] -> kind == 'F' ? 8 : 0);
 
         buf_u32 (&body, str_add (&str, tab[i] -> name));
         buf_u32 (&body, tab[i] -> defined ? tab[i] -> addr : 0);

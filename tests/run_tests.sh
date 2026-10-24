@@ -91,7 +91,7 @@ cmp -s "$T/m.vbin.debug" map/labeloff.debug && ok || bad "--map debug file diffe
   "$LD" -g -o "$T/g.vbin" "$T/m1.v32ob" "$T/m2.v32ob" 2>/dev/null
   cmp -s "$T/g.vbin.debug" link.debug && echo ok || echo "FAIL: linked .debug differs"
   "$LD" -o "$T/x.vbin" "$T/m1.v32ob" 2>"$T/err" && echo "FAIL: undefined symbol accepted" \
-    || { grep -q "undefined symbol '_table'" "$T/err" && echo ok || echo "FAIL: undefined symbol message"; }
+    || { grep -q "undefined reference to \`_table' (first used in .*m1.v32ob)" "$T/err" && echo ok || echo "FAIL: undefined symbol message"; }
   "$LD" -o "$T/x.vbin" "$T/m2.v32ob" "$T/m2.v32ob" 2>"$T/err" && echo "FAIL: duplicate symbol accepted" \
     || { grep -q "defined in both" "$T/err" && echo ok || echo "FAIL: duplicate symbol message"; }
 ) > "$T/ldout" 2>&1
@@ -123,5 +123,59 @@ od -An -tx4 -v -w4 "$T/s.vbin" | sed -n 5p | grep -q 00000064 && ok || bad "--st
 printf 'hlt\n' | "$BIN" - | od -An -c | head -1 | grep -q 'V   3   2   -   V   B   I   N' && ok || bad "stdin -> binary on stdout"
 # stdin batch mode and legacy bare word
 printf 'HLT\n' | "$BIN" - >/dev/null 2>&1 && ok || bad "stdin"
+# VA-1: datafile looks in the file's directory, then each -I, then the current directory
+mkdir -p "$T/src" "$T/dat"
+printf '\001\000\000\000\002\000\000\000' > "$T/dat/romfs.img"
+printf '_d: datafile "romfs.img"\n' > "$T/src/d.asm"
+( cd "$T/src" && "$BIN" -w -o "$T/d1.vbin" d.asm ) 2>"$T/err" && bad "datafile found without -I" \
+  || { grep -q 'cannot open data file "romfs.img" (looked in .*)' "$T/err" && ok || bad "datafile error lists places"; }
+( cd "$T/src" && "$BIN" -w -I "$T/dat" -o "$T/d2.vbin" d.asm ) 2>/dev/null && ok || bad "datafile via -I"
+( cd "$T/dat" && "$BIN" -w -o "$T/d3.vbin" "$T/src/d.asm" ) 2>/dev/null && ok || bad "datafile in the current directory"
+# VA-3: -D against a file's %define
+printf '%%define X 5\n  mov R0, X\n' > "$T/dx.asm"
+"$BIN" -T -D X=9 "$T/dx.asm" 2>&1 | grep -q "redefines the -D definition" && ok || bad "%define over -D warns"
+"$BIN" -T -D X=9 "$T/dx.asm" 2>/dev/null | grep -q 'immediate:   0x00000005' && ok || bad "%define over -D: the file wins"
+"$BIN" -T -D '!X=9' "$T/dx.asm" 2>&1 | grep -q 'immediate:   0x00000009' && ok || bad "-D! makes the command line win"
+"$BIN" -T --force-define X=9 "$T/dx.asm" 2>&1 | grep -q 'immediate:   0x00000009' && ok || bad "--force-define"
+printf '%%define A 1\n%%define A 2\n  mov R0, A\n' > "$T/rd.asm"
+"$BIN" -T "$T/rd.asm" 2>&1 | grep -q "Wredefine" && ok || bad "redefinition warns"
+"$BIN" -T -Wno-redefine "$T/rd.asm" 2>&1 | grep -q "redefined" && bad "-Wno-redefine" || ok
+"$BIN" -T --standard "$T/rd.asm" 2>&1 | grep -q "redefined" && bad "no -Wredefine under --standard" || ok
+printf '%%define A 1\n%%define A 1\n  hlt\n' > "$T/rd2.asm"
+"$BIN" -T "$T/rd2.asm" 2>&1 | grep -q "redefined" && bad "same value is no redefinition" || ok
+# VA-2: --symbols
+printf '_s:\n  mov R0, 1\n.l:\n  jmp .l\n_t:\n  integer 1\n%%define global_v 0x1000\n%%define other 3\n' > "$T/sy.asm"
+"$BIN" -w --symbols "$T/sy.sym" -o "$T/sy.vbin" "$T/sy.asm" \
+  && [ "$(cat "$T/sy.sym")" = "$(printf '0x20000000,_s,F\n0x20000004,_t,D')" ] && ok || bad "--symbols"
+"$BIN" -w --symbols "$T/sy.sym" --symbols-all -o "$T/sy.vbin" "$T/sy.asm" \
+  && [ "$(cat "$T/sy.sym")" = "$(printf '0x20000000,_s,F\n0x20000002,_s.l,F\n0x20000004,_t,D\n0x00001000,global_v,V' | sort -t, -k1,1)" ] && ok || bad "--symbols-all"
+# VA-4: --map matches the assembly file whatever its spelling, and says when nothing matched
+mkdir -p "$T/out/k"
+printf '_f:\n  hlt\n  hlt\n' > "$T/out/k/main.asm"
+printf 'asmfile,asmline,cfile,cline,function\nmain.asm,2,a.c,33,f\nmain.asm,3,a.c,34\n' > "$T/mm.map"
+"$BIN" --cart -w -g --map "$T/mm.map" -o "$T/out/k/m.vbin" "$T/out/k/main.asm" 2>/dev/null
+[ "$(wc -l < "$T/out/k/m.vbin.debug")" = 2 ] && ok || bad "--map with a differently spelled file name"
+printf 'zzz.asm,2,a.c,3\n' > "$T/nm.map"
+"$BIN" --cart -g --map "$T/nm.map" -o "$T/out/k/n.vbin" "$T/out/k/main.asm" 2>&1 | grep -q "no entry matches" && ok || bad "--map total miss warns"
+# VA-6: dependency output
+printf '%%include "inc.inc"\n_d: datafile "romfs.img"\n' > "$T/src/dd.asm"
+printf 'hlt\n' > "$T/src/inc.inc"
+( cd "$T/src" && "$BIN" -w -MD -MP -I "$T/dat" -o "$T/dd.vbin" dd.asm ) 2>/dev/null
+grep -q '^'"$T"'/dd.vbin:' "$T/dd.d" && grep -q 'inc.inc' "$T/dd.d" && grep -q 'romfs.img' "$T/dd.d" && grep -q '^inc.inc:' "$T/dd.d" \
+  && ok || bad "-MD / -MP"
+( cd "$T/src" && "$BIN" -w -MD -MF "$T/o.d" -MT cart.vbin -I "$T/dat" -o "$T/dd.vbin" dd.asm ) 2>/dev/null
+head -1 "$T/o.d" | grep -q '^cart.vbin:' && ok || bad "-MF / -MT"
+# VA-5: archives, --entry, --symbols and the undefined-reference message in v32ld
+printf 'global _main\nextern _lib\n_main:\n  call _lib\n  hlt\n' > "$T/am.asm"
+printf 'global _lib\n_lib:\n  ret\n' > "$T/al.asm"
+printf 'global _unused\n_unused:\n  hlt\n' > "$T/au.asm"
+for n in am al au; do "$BIN" -C -o "$T/$n.v32ob" "$T/$n.asm" 2>/dev/null; done
+"$LD" -A "$T/libx.a" "$T/al.v32ob" "$T/au.v32ob" && ok || bad "v32ld -A"
+"$LD" -o "$T/ar1.vbin" "$T/am.v32ob" "$T/libx.a" --symbols "$T/ar1.sym" 2>/dev/null \
+  && grep -q '_lib,F' "$T/ar1.sym" && ! grep -q '_unused' "$T/ar1.sym" && ok || bad "archive member pulled only when needed"
+"$LD" -o "$T/ar2.vbin" "$T/am.v32ob" -L "$T" -l x 2>/dev/null && cmp -s "$T/ar1.vbin" "$T/ar2.vbin" && ok || bad "-L / -l"
+"$LD" -o "$T/ar3.vbin" "$T/am.v32ob" 2>&1 | grep -q "undefined reference to \`_lib' (first used in" && ok || bad "undefined reference message"
+"$LD" -o "$T/en.vbin" --entry _lib "$T/am.v32ob" "$T/libx.a" -r "$T/en.rel" 2>/dev/null \
+  && od -An -tx4 -v -w4 "$T/en.vbin" | sed -n 4,5p | tr -d '\n ' | grep -q '^0a00000020000005' && ok || bad "--entry places a jump"
 echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

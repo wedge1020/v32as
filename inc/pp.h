@@ -67,5 +67,16 @@ void         pp_set_standard    (pp_t *p, int on);     // exact stock-assembler 
 void         pp_set_warnings    (pp_t *p, int on);
 void         pp_set_target      (pp_t *p, const char *kind, unsigned base);   // "BIOS" "CART" "ORIGIN" "NONE"
 void         pp_add_include_dir (pp_t *p, const char *dir);
+void         pp_set_redefine_warning (pp_t *p, int on);     // -Wredefine (default on, never under --standard)
+
+// Files read by %include so far, in order (for -MD)
+const char  *const  *pp_deps (const pp_t *p, size_t *n);
+
+// Every object-like macro as (name, replacement text); for the compiler's variables
+void         pp_each_define (pp_t *p, void (*cb) (void *ud, const char *name, const char *body), void *ud);
+
+// For a label the assembler sees (e.g. "_draw__again") that came from a file-local ".again"
+// under "_draw:", its spelling "_draw.again"; NULL for any other label
+const char  *pp_local_name (pp_t *p, const char *mangled);
 
 #endif
