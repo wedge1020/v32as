@@ -19,7 +19,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define  VERSION      "20261024-dev"
+#define  VERSION      "20261025-dev"
 #define  BIOS_BASE    0x10000000u
 #define  CART_BASE    0x20000000u
 
@@ -325,6 +325,14 @@ static void  put_path (FILE *fp, const char *path)
     }
 }
 
+#define  V32X_WINDOW_BASE  0x100000u
+#define  V32X_MAGIC        0x58323356u
+
+static int  debug_mode_not_program (int debug, dbgmode_t m)
+{
+    return (debug && m != DBG_PROGRAM);
+}
+
 static void  usage (FILE *fp)
 {
     fprintf (fp,
@@ -338,9 +346,15 @@ static void  usage (FILE *fp)
         "  -g, --debug[=MODE]   also write FILE.debug (address,file,line[,label]); MODE is\n"
         "                       program (default), vbin or v32, as in 'v32as -g'\n"
         "      --symbols=FILE   write 'address,name,kind' for every label (kind F: code, D: data)\n"
+        "      --v32x           write a V32X executable (v32nix, inc/exec.h) instead of a VBIN: an 8-word\n"
+        "                       header, then the image. Needs --data; the base defaults to 0x100000 (the\n"
+        "                       window base) and is the header's origin. --entry then is a global label or a\n"
+        "                       word offset into the image (default 0), recorded in the header, and no\n"
+        "                       jump is added\n"
+        "      --data=WORDS     with --v32x: zeroed global-variable words behind the image\n"
         "      --entry=SYMBOL   the program starts at SYMBOL: when it is not the first word, a\n"
         "                       two-word 'jmp SYMBOL' is placed in front of the first object\n"
-        "  -L DIR, -l NAME      search DIR for libNAME.a (archives given by name or as operands are\n"
+        "  -L DIR, -l NAME      search DIR for NAME.v32a, then libNAME.a (archives given by name or as operands are\n"
         "                       scanned after the objects; a member is linked in only when it defines\n"
         "                       a symbol that is still undefined)\n"
         "  -A, --archive=FILE   make an archive FILE of the objects given, instead of linking\n"
@@ -366,6 +380,8 @@ int  main (int argc, char **argv)
         { "symbols",     required_argument, 0, 1003 },
         { "entry",       required_argument, 0, 1004 },
         { "archive",     required_argument, 0, 'A' },
+        { "v32x",        no_argument,       0, 1005 },
+        { "data",        required_argument, 0, 1006 },
         { "no-warnings", no_argument,       0, 'w' },
         { "help",        no_argument,       0, 'h' },
         { "version",     no_argument,       0, 'V' },
@@ -383,6 +399,8 @@ int  main (int argc, char **argv)
     char        *psel = NULL;
     int          nobj = 0, npool = 0, c, i, errors = 0, rc = 0;
     uint32_t     lead = 0;
+    int          v32x = 0, data_set = 0;
+    uint32_t     data_words = 0, entry_off = 0;
     gsym_t      *g = NULL;
     size_t       ng = 0, capg = 0, total = 0, k, j;
     uint32_t    *words = NULL;
@@ -402,6 +420,22 @@ int  main (int argc, char **argv)
             case 1003: symbols = optarg;          break;
             case 1004: entry = optarg;            break;
             case 'A':  archive_out = optarg;      break;
+            case 1005: v32x = 1;                  break;
+            case 1006:
+            {
+                char           *end;
+                unsigned long   v = strtoul (optarg, &end, 0);
+
+                if (*optarg == '\0' || *end != '\0' || v > 0x7FFFFFFFul)
+                {
+                    fprintf (stderr, "v32ld: invalid --data '%s' (a number of words)\n", optarg);
+                    return (2);
+                }
+
+                data_set = 1;
+                data_words = (uint32_t) v;
+                break;
+            }
             case 'L':
                 libdirs = xrealloc (libdirs, (size_t) (nlibdirs + 1) * sizeof (char *));
                 libdirs[nlibdirs++] = optarg;
@@ -469,7 +503,26 @@ int  main (int argc, char **argv)
         return (2);
     }
 
-    base = origin_set ? origin : (bios ? BIOS_BASE : CART_BASE);
+    if (v32x && !data_set)
+    {
+        fprintf (stderr, "v32ld: --v32x needs --data WORDS (the zeroed variable words behind the image)\n");
+        return (2);
+    }
+
+    if (!v32x && data_set)
+    {
+        fprintf (stderr, "v32ld: --data only makes sense with --v32x\n");
+        return (2);
+    }
+
+    if (v32x && (bios || cart || debug_mode_not_program (debug, dmode)))
+    {
+        fprintf (stderr, "v32ld: --v32x cannot be combined with -b, -c or -g vbin/v32 "
+                         "(the base is -O ADDR, default 0x%X; addresses in -g are the program's)\n", V32X_WINDOW_BASE);
+        return (2);
+    }
+
+    base = origin_set ? origin : (bios ? BIOS_BASE : (v32x ? V32X_WINDOW_BASE : CART_BASE));
     // objects in command line order; archives (named, or found with -l) are kept apart
     // and mined afterwards
     for (i = optind; i < argc + nlibs; i++)
@@ -486,9 +539,14 @@ int  main (int argc, char **argv)
             for (d = 0; d < nlibdirs + 1 && path == NULL; d++)
             {
                 const char  *dir = d < nlibdirs ? libdirs[d] : ".";
-                char        *cand = xrealloc (NULL, strlen (dir) + strlen (name) + 8);
+                char        *cand = xrealloc (NULL, strlen (dir) + strlen (name) + 16);
 
-                sprintf (cand, "%s/lib%s.a", dir, name);
+                sprintf (cand, "%s/%s.v32a", dir, name);
+
+                if (access (cand, R_OK) != 0)
+                {
+                    sprintf (cand, "%s/lib%s.a", dir, name);
+                }
 
                 if (access (cand, R_OK) == 0)  { path = cand; }
                 else                           { free (cand); }
@@ -496,8 +554,8 @@ int  main (int argc, char **argv)
 
             if (path == NULL)
             {
-                fprintf (stderr, "v32ld: cannot find -l%s (looked for lib%s.a in the -L directories and .)\n",
-                         name, name);
+                fprintf (stderr, "v32ld: cannot find -l%s (looked for %s.v32a and lib%s.a in the -L directories and .)\n",
+                         name, name, name);
                 return (2);
             }
         }
@@ -633,7 +691,8 @@ int  main (int argc, char **argv)
     }
 
     // --entry: the program starts at the first word; anything else gets a jump in front
-    if (entry != NULL)
+    // (--v32x has an entry field in its header instead: handled once the symbols have addresses)
+    if (entry != NULL && !v32x)
     {
         int      found = 0, o2;
         uint32_t k2;
@@ -704,6 +763,40 @@ int  main (int argc, char **argv)
             fprintf (stderr, "v32ld: error: '%s' is defined in both %s and %s\n",
                      g[k].name, g[k - 1].where, g[k].where);
             errors++;
+        }
+    }
+
+    if (v32x)
+    {
+        if (entry != NULL)
+        {
+            char           *end;
+            unsigned long   v = strtoul (entry, &end, 0);
+
+            if (*entry != '\0' && *end == '\0')
+            {
+                entry_off = (uint32_t) v;           // a word offset
+            }
+            else
+            {
+                gsym_t   key = { entry, 0, NULL };
+                gsym_t  *hit = bsearch (&key, g, ng, sizeof (gsym_t), gsym_cmp);
+
+                if (hit == NULL)
+                {
+                    fprintf (stderr, "v32ld: error: entry symbol '%s' is not defined by any object\n", entry);
+                    return (1);
+                }
+
+                entry_off = hit -> addr - base;
+            }
+        }
+
+        if (entry_off >= total)
+        {
+            fprintf (stderr, "v32ld: error: the entry point (word %u) is outside the image (%zu words)\n",
+                     entry_off, total);
+            return (1);
         }
     }
 
@@ -832,11 +925,27 @@ int  main (int argc, char **argv)
         return (2);
     }
 
-    fwrite ("V32-VBIN", 1, 8, fp);
-
-    for (k = 0; k < 4; k++)
+    if (v32x)
     {
-        fputc ((int) (((uint32_t) total >> (8 * k)) & 0xFF), fp);
+        // magic, version, header words, text words, data words, entry offset, origin, flags
+        uint32_t  hdr[8] = { V32X_MAGIC, 1, 8, (uint32_t) total, data_words, entry_off, base, 0 };
+
+        for (k = 0; k < 8; k++)
+        {
+            for (j = 0; j < 4; j++)
+            {
+                fputc ((int) ((hdr[k] >> (8 * j)) & 0xFF), fp);
+            }
+        }
+    }
+    else
+    {
+        fwrite ("V32-VBIN", 1, 8, fp);
+
+        for (k = 0; k < 4; k++)
+        {
+            fputc ((int) (((uint32_t) total >> (8 * k)) & 0xFF), fp);
+        }
     }
 
     for (k = 0; k < total; k++)

@@ -177,5 +177,13 @@ for n in am al au; do "$BIN" -C -o "$T/$n.v32ob" "$T/$n.asm" 2>/dev/null; done
 "$LD" -o "$T/ar3.vbin" "$T/am.v32ob" 2>&1 | grep -q "undefined reference to \`_lib' (first used in" && ok || bad "undefined reference message"
 "$LD" -o "$T/en.vbin" --entry _lib "$T/am.v32ob" "$T/libx.a" -r "$T/en.rel" 2>/dev/null \
   && od -An -tx4 -v -w4 "$T/en.vbin" | sed -n 4,5p | tr -d '\n ' | grep -q '^0a00000020000005' && ok || bad "--entry places a jump"
+# V32X output (v32nix): 8-word header, then the image linked at the window base
+"$LD" --v32x --data 7 --entry _lib -o "$T/x.x" "$T/am.v32ob" "$T/al.v32ob" 2>/dev/null \
+  && [ "$(od -An -tx4 -v -w4 "$T/x.x" | head -8 | tr -d ' \n')" = 5832335600000001000000080000000400000007000000030010000000000000 ] \
+  && [ "$(od -An -tx4 -v -w4 "$T/x.x" | sed -n 10p | tr -d ' ')" = 00100003 ] && ok || bad "--v32x header and addresses"
+"$LD" --v32x -o "$T/x.x" "$T/am.v32ob" "$T/al.v32ob" 2>/dev/null && bad "--v32x without --data" || ok
+"$LD" --v32x --data 1 --entry 99 -o "$T/x.x" "$T/am.v32ob" "$T/al.v32ob" 2>/dev/null && bad "--v32x entry outside the image" || ok
+mkdir -p "$T/lib"; cp "$T/libx.a" "$T/lib/x.v32a"
+"$LD" -o "$T/ar4.vbin" "$T/am.v32ob" -L "$T/lib" -l x 2>/dev/null && cmp -s "$T/ar1.vbin" "$T/ar4.vbin" && ok || bad "-l finds NAME.v32a"
 echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

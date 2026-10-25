@@ -32,6 +32,7 @@ design notes, `tests/`, `experiments/`; `make` puts generated files in `build/` 
 - **v32ld (VA-5)**: `--symbols FILE`; `-A FILE` makes an archive (`V32-VARC`) of objects; archives given as operands or
   with `-L DIR -l NAME` (libNAME.a) are mined after the objects, a member being linked only when it defines a symbol still
   undefined; `--entry SYMBOL` puts a two-word `jmp SYMBOL` first unless the symbol is already the first word;
+  `--v32x --data N [--entry SYMBOL|OFFSET]` writes a V32X executable (header + image linked at 0x100000).
   `undefined reference to `x' (first used in a.v32ob)`, once per symbol. Not done: relocatable (`-r` object) output.
 - **`-MD -MMD -MP -MF FILE -MT TARGET` (VA-6)**: the sources, `%include` files and `datafile` files read, as a Makefile rule
   (default file: the output name with `.d`).
