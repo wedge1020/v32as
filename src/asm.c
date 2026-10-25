@@ -1983,8 +1983,9 @@ int  asm_write_symbols (asm_t *a, FILE *fp, int all,
                         const symline_t *extra, size_t nextra)
 {
     const sym_t  *s;
-    symrow_t     *v = xrealloc (NULL, (a -> nsyms + nextra + 1) * sizeof (symrow_t));
-    size_t        n = 0, i;
+    symrow_t     *v = xrealloc (NULL, (a -> nsyms + nextra + a -> nrel + 1) * sizeof (symrow_t));
+    char        **own = NULL;                   // names made here ("datasym+N"), freed below
+    size_t        n = 0, i, nown = 0;
 
     for (s = a -> first; s != NULL; s = s -> order)
     {
@@ -2016,6 +2017,40 @@ int  asm_write_symbols (asm_t *a, FILE *fp, int all,
         n++;
     }
 
+    // --symbols-all: the data variables the program refers to as "DATASYM+N" (what v32cc --pic-data
+    // writes for a global): one line per distinct N, kind V, the address column holding the offset N
+    for (i = 0; all && i < a -> nrel; i++)
+    {
+        const sym_t  *d = a -> rel[i].sym;
+        size_t        j;
+        char         *nm;
+
+        if (d == NULL || !d -> datasym)
+        {
+            continue;
+        }
+
+        nm = xrealloc (NULL, strlen (d -> name) + 12);
+        sprintf (nm, "%s+%u", d -> name, (unsigned) a -> rel[i].addend);
+
+        for (j = 0; j < nown && strcmp (own[j], nm) != 0; j++)      // the same variable again: once is enough
+        {
+        }
+
+        if (j < nown)
+        {
+            free (nm);
+            continue;
+        }
+
+        own = xrealloc (own, (nown + 1) * sizeof (char *));
+        own[nown++] = nm;
+        v[n].name   = nm;
+        v[n].addr   = a -> rel[i].addend;
+        v[n].kind   = 'V';
+        n++;
+    }
+
     qsort (v, n, sizeof (symrow_t), symrow_cmp);
 
     for (i = 0; i < n; i++)
@@ -2023,6 +2058,12 @@ int  asm_write_symbols (asm_t *a, FILE *fp, int all,
         fprintf (fp, "0x%08X,%s,%c\n", v[i].addr, v[i].name, v[i].kind);
     }
 
+    for (i = 0; i < nown; i++)
+    {
+        free (own[i]);
+    }
+
+    free (own);
     free (v);
 
     return (ferror (fp) ? -1 : 0);

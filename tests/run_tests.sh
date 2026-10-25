@@ -149,6 +149,12 @@ printf '_s:\n  mov R0, 1\n.l:\n  jmp .l\n_t:\n  integer 1\n%%define global_v 0x1
   && [ "$(cat "$T/sy.sym")" = "$(printf '0x20000000,_s,F\n0x20000004,_t,D')" ] && ok || bad "--symbols"
 "$BIN" -w --symbols "$T/sy.sym" --symbols-all -o "$T/sy.vbin" "$T/sy.asm" \
   && [ "$(cat "$T/sy.sym")" = "$(printf '0x20000000,_s,F\n0x20000002,_s.l,F\n0x20000004,_t,D\n0x00001000,global_v,V' | sort -t, -k1,1)" ] && ok || bad "--symbols-all"
+# --symbols-all: "datasym+N" references are variables of kind V, the offset N in the address column
+printf 'datasym __data_base\n_s:\n  mov R0, [__data_base+3]\n  mov R1, [__data_base+1]\n  mov [__data_base+3], R0\n' > "$T/dv.asm"
+"$BIN" -w --symbols "$T/dv.sym" -o "$T/dv.vbin" "$T/dv.asm" \
+  && [ "$(cat "$T/dv.sym")" = "$(printf '0x20000000,_s,F')" ] && ok || bad "--symbols leaves out datasym variables"
+"$BIN" -w --symbols "$T/dv.sym" --symbols-all -o "$T/dv.vbin" "$T/dv.asm" \
+  && [ "$(cat "$T/dv.sym")" = "$(printf '0x00000001,__data_base+1,V\n0x00000003,__data_base+3,V\n0x20000000,_s,F')" ] && ok || bad "--symbols-all lists datasym+N as V"
 # VA-4: --map matches the assembly file whatever its spelling, and says when nothing matched
 mkdir -p "$T/out/k"
 printf '_f:\n  hlt\n  hlt\n' > "$T/out/k/main.asm"

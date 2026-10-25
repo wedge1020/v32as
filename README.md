@@ -22,7 +22,8 @@ design notes, `tests/`, `experiments/`; `make` puts generated files in `build/` 
   `--standard` keeps the two old places (no `-I`, as for `%include`).
 - **`--symbols FILE` (VA-2)**: `address,name,kind` per label, sorted by address; kind `F` (code follows), `D` (data
   follows, or nothing). `--symbols-all` adds file-local labels as `function.local` and every `%define global_NAME number`
-  as kind `V`. Not available with `-C` (use `v32ld --symbols`).
+  as kind `V`, and every `DATASYM+N` the program refers to (see `datasym`) as `N,DATASYM+N,V`: the offset in the
+  address column. Not available with `-C` (use `v32ld --symbols`).
 - **`-D` against `%define` (VA-3)**: a `%define` of a `-D` name warns (the file still wins); `-D!NAME=VALUE` or
   `--force-define NAME=VALUE` makes the command line win. A `%define` that changes a macro's value warns
   (`-Wredefine`, on by default; `-Wno-redefine`, `-w` and `--standard` silence it).
