@@ -272,7 +272,11 @@ int     asm_write_object    (asm_t *a, FILE *fp);
 void    asm_sym_declare     (asm_t *a, const loc_t *loc, sym_t *s, int external);
 void    asm_sym_datasym     (asm_t *a, const loc_t *loc, sym_t *s);
 int     asm_write_relocs    (asm_t *a, FILE *fp);
-int     asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode, FILE *cmap, const char *cmap_name);
+int     asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode);   // needs asm_cmap_load first
+int     asm_cmap_load       (FILE *cmap, const char *cmap_name);    // --map: returns the malformed lines
+void    asm_cmap_free       (void);
+int     asm_cmap_loaded     (void);
+void    asm_cmap_note       (const char *file, int line);           // note: the C line of an assembly line
 void    asm_print_labels    (asm_t *a, FILE *fp);
 void    asm_add_dep         (asm_t *a, const char *path);
 

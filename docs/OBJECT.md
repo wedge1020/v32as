@@ -27,10 +27,10 @@ A label not named by either is local to its object (two objects may reuse a loca
 * a label cannot be both; `label +/- integer` works on externs (`mov R0, _table+2`, `pointer _t+1`);
 * outside `-C`, `global` is accepted (and checked), `extern` references simply stay undefined labels.
 
-In an object, labels are relative to the object (its first word is 0). `-b -c -O -g -r --map -T -n -E` are not
-allowed with `-C`: the base address is the linker's job, and debug records travel inside the object.
+In an object, labels are relative to the object (its first word is 0). `-b -c -O -g -r -T -n -E` are not
+allowed with `-C` (`--map FILE` is: it replaces the assembly file and line of the debug records by the C ones): the base address is the linker's job, and debug records travel inside the object.
 
-## Object format (version 1)
+## Object format (version 1; version 2 adds datasyms and function names)
 
 All numbers are 32-bit little endian words.
 
@@ -40,14 +40,16 @@ All numbers are 32-bit little endian words.
 | version | 1 | `1` |
 | nwords, nsyms, nrels, ndbg, strsize | 5 | counts, and the string table size in bytes |
 | words | nwords | the program: code and data, addresses as assembled at base 0 |
-| symbols | 3 x nsyms | `name` (string offset), `value` (word offset, 0 if undefined), `flags` (1 defined, 2 global, 4 extern, 8 label followed by code) |
+| symbols | 3 x nsyms | `name` (string offset), `value` (word offset, 0 if undefined), `flags` (1 defined, 2 global, 4 extern, 8 label followed by code, 16 datasym: version 2, value 0, defined, never moved) |
 | relocations | 3 x nrels | `word` (index), `symbol` (index, or `0xFFFFFFFF`), `addend` |
-| debug | 3 x ndbg | `word`, `file` (string offset), `line`: one per instruction |
+| debug | 3 x ndbg (4 x in version 2) | `word`, `file` (string offset), `line`: one per instruction; version 2 adds `func`, a string offset or `0xFFFFFFFF`, the function of a `--map` entry |
 | string table | strsize bytes | NUL terminated strings |
+
+A version 2 object is written when the source has a `datasym` or `--map` was given; version 1 otherwise. `v32ld` reads both.
 
 A relocation says: the final value of `word` is `address(symbol) + addend`. With symbol `0xFFFFFFFF` it is
 `load address of the object + addend` (the values computed from an instruction's own address: `MOV Rn, IP`,
-the `IR`/`IV` patch addresses). `address(symbol)` is the symbol's offset plus the object's final position for a
+the `IR`/`IV` patch addresses). For a datasym the final value is just `addend` (the base of the data is not the program's business), and `v32ld -r` marks the word `D`. `address(symbol)` is the symbol's offset plus the object's final position for a
 defined symbol, or the address of the global of that name for an `extern` one.
 
 ## `v32ld`
@@ -57,7 +59,8 @@ defined symbol, or the address of the global of that name for an `extern` one.
 | `-o FILE` | output (default `a.vbin`) |
 | `-b`, `-c`, `-O ADDR` | base: BIOS, cartridge (default) or any address |
 | `-g[MODE]` | writes `FILE.debug` like `v32as -g` (`program`, `vbin`, `v32`); labels are every label of every object, local or global, and the lines are the sources' own |
-| `-r FILE` | `index,0xVALUE` for each word holding an address, as `v32as -r` |
+| `-r FILE`, `--emit-relocs FILE` | `index,0xVALUE[,C\|D]` for each word holding an address, as `v32as -r` (see the README for the format) |
+| `-R`, `--relocatable` | partial link: write one object (default `a.v32ob`) joining the inputs. Defined symbols keep their kind and move by their object's start, an `extern` that an input defines becomes a reference to the definition, the rest stay `extern`; relocations, datasyms and debug records are kept. Linking the result equals linking the inputs. Not with `-b -c -O -g -r --symbols --entry --v32x` |
 | `--symbols FILE` | `0xADDRESS,name,kind` for every label of every object (kind `F` code, `D` data), sorted by address; local labels appear under the name the assembler gave them (`_f__loop`) |
 | `--entry SYMBOL` | the program starts at a global label: unless it is the first word of the first object, a two-word `jmp SYMBOL` is placed in front of everything (it appears in `-r`) |
 | `-L DIR`, `-l NAME` | archives `DIR/NAME.v32a`, else `DIR/libNAME.a` (`.` is always searched last) |

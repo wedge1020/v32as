@@ -74,6 +74,9 @@ void  asm_resolve (const asm_t *a, int line, const char **file, int *src_line, i
 static void  report (asm_t *a, const loc_t *loc, const char *kind, const char *fmt,
                      va_list ap)
 {
+    const char  *nfile = NULL;
+    int          nline = 0;
+
     fflush (a -> out);
 
     if (loc != NULL)
@@ -83,6 +86,9 @@ static void  report (asm_t *a, const loc_t *loc, const char *kind, const char *f
         int          expanded;
 
         asm_resolve (a, loc -> first_line, &file, &line, &expanded);
+
+        nfile = file;
+        nline = line;
 
         // a column inside macro-expanded text means nothing to the programmer
         if (expanded || loc -> first_column <= 0)
@@ -101,6 +107,8 @@ static void  report (asm_t *a, const loc_t *loc, const char *kind, const char *f
 
     vfprintf (stderr, fmt, ap);
     fputc    ('\n', stderr);
+
+    asm_cmap_note (nfile, nline);               // --map: the C line this assembly line came from
 }
 
 void  asm_error (asm_t *a, const loc_t *loc, const char *fmt, ...)
@@ -274,6 +282,9 @@ sym_t  *asm_sym_intern (asm_t *a, const char *name, size_t n)
     s -> defined   = 0;
     s -> global    = 0;
     s -> external  = 0;
+    s -> datasym   = 0;
+    s -> gline     = 0;
+    s -> gcol      = 0;
     s -> kind      = 'D';
     s -> pending   = 0;
     s -> gfile     = NULL;
@@ -1526,14 +1537,16 @@ int  asm_write_relocs (asm_t *a, FILE *fp)
 
 ////////////////////////////////////////////////////////////////////////////////////////
 //
-// Debug file merged with a compiler's file (--map): v32cc -g writes
+// The compiler's debug file (--map): v32cc -g writes
 //
 //     asmfile,asmline,cfile,cline[,function]
 //
-// and each instruction of the assembler's own debug file is looked up there by its
-// (file,line). The output has the same layout as -g (ADDRESS,file,line[,label]) but names
-// the C file and line, with the function name as the label when the map gives one.
-// Instructions whose assembly line is not in the map are left out.
+// It is loaded once, before assembling, and used three ways: -g merges it (each instruction of
+// the assembler's own debug records is looked up by its (file,line) and the output names the C
+// file and line, with the function as the label; instructions with no entry are left out), -C
+// stores the C file and line in the object instead of the assembly ones, and every error or
+// warning gets a note naming the C line the assembly line came from (the exact entry, or the
+// nearest earlier one). Names are matched exactly, else by base name (see map_find_by_base).
 //
 typedef struct
 {
@@ -1544,6 +1557,17 @@ typedef struct
     char  *func;
 }
 mapent_t;
+
+typedef struct
+{
+    mapent_t  *m;
+    size_t     nm;
+    size_t    *bidx;                    // indexes of m sorted by (base name, line)
+    char      *name;                    // the map file's name, for messages
+}
+cmap_t;
+
+static cmap_t  *the_cmap;
 
 static int  mapent_cmp (const void *x, const void *y)
 {
@@ -1649,51 +1673,131 @@ static int  shared_tail (const char *p, const char *q)
 
 // the map entry for (file, line) when only the file's base name has to agree; among
 // several candidates the one whose directories agree the most wins
-static mapent_t  *map_find_by_base (mapent_t *m, const size_t *bidx, size_t nm, const char *file,
-                                    int line)
+static const mapent_t  *map_find_by_base (const cmap_t *c, const char *file, int line)
 {
-    size_t  lo = 0, hi = nm, k;
-    int     best = -1;
-    size_t  pick = 0;
+    const mapent_t  *m = c -> m;
+    size_t           lo = 0, hi = c -> nm, k;
+    int              best = -1;
+    size_t           pick = 0;
 
     while (lo < hi)
     {
         size_t  mid = (lo + hi) / 2;
 
-        if (base_key_cmp (m[bidx[mid]].afile, m[bidx[mid]].aline, file, line) < 0)  { lo = mid + 1; }
-        else                                                                         { hi = mid; }
+        if (base_key_cmp (m[c -> bidx[mid]].afile, m[c -> bidx[mid]].aline, file, line) < 0)  { lo = mid + 1; }
+        else                                                                                   { hi = mid; }
     }
 
-    for (k = lo; k < nm && base_key_cmp (m[bidx[k]].afile, m[bidx[k]].aline, file, line) == 0; k++)
+    for (k = lo; k < c -> nm && base_key_cmp (m[c -> bidx[k]].afile, m[c -> bidx[k]].aline, file, line) == 0; k++)
     {
-        int  t = shared_tail (m[bidx[k]].afile, file);
+        int  t = shared_tail (m[c -> bidx[k]].afile, file);
 
         if (t > best)
         {
             best = t;
-            pick = bidx[k];
+            pick = c -> bidx[k];
         }
     }
 
     return (best >= 0 ? &m[pick] : NULL);
 }
 
-int  asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode, FILE *cmap, const char *cmap_name)
+// the entry for exactly this assembly line, if there is one
+static const mapent_t  *cmap_find (const cmap_t *c, const char *normfile, int line)
 {
-    mapent_t  *m = NULL;
-    size_t     nm = 0, capm = 0, i;
-    char       line[4096];
-    int        rc = 0;
-    uint32_t   base_off = (mode == DBG_V32) ? 0x8C : (mode == DBG_VBIN ? 0x0C : 0);
-    uint32_t   unit     = (mode == DBG_PROGRAM) ? 1 : 4;
-    size_t    *bidx;
-    size_t     matched = 0;
+    mapent_t         key;
+    const mapent_t  *hit;
+
+    key.afile = (char *) normfile;
+    key.aline = line;
+    hit       = bsearch (&key, c -> m, c -> nm, sizeof (mapent_t), mapent_cmp);
+
+    return (hit != NULL ? hit : map_find_by_base (c, normfile, line));
+}
+
+// the last entry at or before this line of the same file (by name, else by base name)
+static const mapent_t  *cmap_before (const cmap_t *c, const char *normfile, int line)
+{
+    size_t  lo = 0, hi = c -> nm;
+
+    while (lo < hi)                     // first entry greater than (file, line)
+    {
+        size_t  mid = (lo + hi) / 2;
+
+        if (strcmp (c -> m[mid].afile, normfile) < 0
+            || (strcmp (c -> m[mid].afile, normfile) == 0 && c -> m[mid].aline <= line))  { lo = mid + 1; }
+        else                                                                              { hi = mid; }
+    }
+
+    if (lo > 0 && strcmp (c -> m[lo - 1].afile, normfile) == 0)
+    {
+        return (&c -> m[lo - 1]);
+    }
+
+    lo = 0;
+    hi = c -> nm;
+
+    while (lo < hi)                     // same through the base-name index
+    {
+        size_t  mid = (lo + hi) / 2;
+
+        if (base_key_cmp (c -> m[c -> bidx[mid]].afile, c -> m[c -> bidx[mid]].aline, normfile, line) <= 0)  { lo = mid + 1; }
+        else                                                                                                  { hi = mid; }
+    }
+
+    if (lo > 0 && strcmp (base_of (c -> m[c -> bidx[lo - 1]].afile), base_of (normfile)) == 0)
+    {
+        return (&c -> m[c -> bidx[lo - 1]]);
+    }
+
+    return (NULL);
+}
+
+int  asm_cmap_loaded (void)
+{
+    return (the_cmap != NULL);
+}
+
+void  asm_cmap_free (void)
+{
+    size_t  i;
+
+    if (the_cmap == NULL)
+    {
+        return;
+    }
+
+    for (i = 0; i < the_cmap -> nm; i++)
+    {
+        free (the_cmap -> m[i].afile);
+        free (the_cmap -> m[i].cfile);
+        free (the_cmap -> m[i].func);
+    }
+
+    free (the_cmap -> m);
+    free (the_cmap -> bidx);
+    free (the_cmap -> name);
+    free (the_cmap);
+    the_cmap = NULL;
+}
+
+// read the map; returns the number of malformed lines (reported), or -1 if nothing could be read
+int  asm_cmap_load (FILE *cmap, const char *cmap_name)
+{
+    cmap_t  *c = xrealloc (NULL, sizeof (*c));
+    size_t   capm = 0, i;
+    char     line[4096];
+    int      bad = 0;
+
+    memset (c, 0, sizeof (*c));
+    c -> name = xstrndup (cmap_name, strlen (cmap_name));
 
     while (fgets (line, sizeof (line), cmap) != NULL)
     {
         char  *f[5] = { 0 }, *p = line;
         int    nf = 0;
         char  *end;
+        int    aline;
 
         line[strcspn (line, "\r\n")] = 0;
 
@@ -1714,59 +1818,94 @@ int  asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode, FILE *cmap, const 
         {
             fprintf (stderr, "v32as: %s: malformed line (expected asmfile,asmline,cfile,cline[,function])\n",
                      cmap_name);
-            rc = -1;
+            bad++;
             continue;
         }
 
-        if (nm == capm)
-        {
-            capm = capm ? capm * 2 : 256;
-            m    = xrealloc (m, capm * sizeof (mapent_t));
-        }
-
-        m[nm].aline = (int) strtol (f[1], &end, 10);
+        aline = (int) strtol (f[1], &end, 10);
 
         if (end == f[1])
         {
             continue;                   // a header line
         }
 
-        m[nm].afile = norm_path (f[0]);
-        m[nm].cfile = norm_path (f[2]);
-        m[nm].cline = (int) strtol (f[3], NULL, 10);
-        m[nm].func  = nf > 4 && f[4][0] ? xstrndup (f[4], strlen (f[4])) : NULL;
-        nm++;
+        if (c -> nm == capm)
+        {
+            capm = capm ? capm * 2 : 256;
+            c -> m = xrealloc (c -> m, capm * sizeof (mapent_t));
+        }
+
+        c -> m[c -> nm].aline = aline;
+        c -> m[c -> nm].afile = norm_path (f[0]);
+        c -> m[c -> nm].cfile = norm_path (f[2]);
+        c -> m[c -> nm].cline = (int) strtol (f[3], NULL, 10);
+        c -> m[c -> nm].func  = nf > 4 && f[4][0] ? xstrndup (f[4], strlen (f[4])) : NULL;
+        c -> nm++;
     }
 
-    qsort (m, nm, sizeof (mapent_t), mapent_cmp);
+    qsort (c -> m, c -> nm, sizeof (mapent_t), mapent_cmp);
 
     // a second index by (base name, line), for assembly files the map names differently
     // ("main.asm" in the map, "out/kernel/main.asm" on the command line)
-    bidx = xrealloc (NULL, (nm + 1) * sizeof (size_t));
+    c -> bidx = xrealloc (NULL, (c -> nm + 1) * sizeof (size_t));
 
-    for (i = 0; i < nm; i++)
+    for (i = 0; i < c -> nm; i++)
     {
-        bidx[i] = i;
+        c -> bidx[i] = i;
     }
 
-    map_sort_base = m;
-    qsort (bidx, nm, sizeof (size_t), baseidx_cmp);
+    map_sort_base = c -> m;
+    qsort (c -> bidx, c -> nm, sizeof (size_t), baseidx_cmp);
+
+    asm_cmap_free ();
+    the_cmap = c;
+
+    return (bad);
+}
+
+// after a diagnostic about assembly line (file, line): where in the C source it came from
+void  asm_cmap_note (const char *file, int line)
+{
+    char            *nf;
+    const mapent_t  *hit;
+
+    if (the_cmap == NULL || file == NULL || line < 1)
+    {
+        return;
+    }
+
+    nf  = norm_path (file);
+    hit = cmap_find (the_cmap, nf, line);
+
+    if (hit != NULL)
+    {
+        fprintf (stderr, "%s:%d: note: the assembly line above was generated from here%s%s\n",
+                 hit -> cfile, hit -> cline, hit -> func != NULL ? ", in function " : "",
+                 hit -> func != NULL ? hit -> func : "");
+    }
+    else if ((hit = cmap_before (the_cmap, nf, line)) != NULL)
+    {
+        fprintf (stderr, "%s:%d: note: the assembly line above has no source line of its own; "
+                         "it follows the code generated from here%s%s\n",
+                 hit -> cfile, hit -> cline, hit -> func != NULL ? ", in function " : "",
+                 hit -> func != NULL ? hit -> func : "");
+    }
+
+    free (nf);
+}
+
+int  asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode)
+{
+    const cmap_t  *c = the_cmap;
+    uint32_t       base_off = (mode == DBG_V32) ? 0x8C : (mode == DBG_VBIN ? 0x0C : 0);
+    uint32_t       unit     = (mode == DBG_PROGRAM) ? 1 : 4;
+    size_t         matched = 0, i;
 
     for (i = 0; i < a -> nrec; i++)
     {
         const dbgrec_t  *r = &a -> rec[i];
-        mapent_t         key;
-        mapent_t        *hit;
         char            *file = norm_path (r -> file);
-
-        key.afile = file;
-        key.aline = r -> line;
-        hit       = bsearch (&key, m, nm, sizeof (mapent_t), mapent_cmp);
-
-        if (hit == NULL)
-        {
-            hit = map_find_by_base (m, bidx, nm, file, r -> line);
-        }
+        const mapent_t  *hit = cmap_find (c, file, r -> line);
 
         if (hit != NULL)
         {
@@ -1794,33 +1933,22 @@ int  asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode, FILE *cmap, const 
         int          shown = 0;
 
         fprintf (stderr, "v32as: warning: --map %s: no entry matches an instruction of %s "
-                         "(names in the map:", cmap_name, a -> rec[0].file);
+                         "(names in the map:", c -> name, a -> rec[0].file);
 
-        for (i = 0; i < nm && shown < 4; i++)
+        for (i = 0; i < c -> nm && shown < 4; i++)
         {
-            if (last == NULL || strcmp (last, m[i].afile) != 0)
+            if (last == NULL || strcmp (last, c -> m[i].afile) != 0)
             {
-                fprintf (stderr, "%s %s", shown ? "," : "", m[i].afile);
-                last = m[i].afile;
+                fprintf (stderr, "%s %s", shown ? "," : "", c -> m[i].afile);
+                last = c -> m[i].afile;
                 shown++;
             }
         }
 
-        fprintf (stderr, "%s)\n", nm == 0 ? " none" : (shown >= 4 ? ", ..." : ""));
+        fprintf (stderr, "%s)\n", c -> nm == 0 ? " none" : (shown >= 4 ? ", ..." : ""));
     }
 
-    free (bidx);
-
-    for (i = 0; i < nm; i++)
-    {
-        free (m[i].afile);
-        free (m[i].cfile);
-        free (m[i].func);
-    }
-
-    free (m);
-
-    return (rc != 0 || ferror (fp) ? -1 : 0);
+    return (ferror (fp) ? -1 : 0);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -2009,15 +2137,10 @@ int  asm_write_object (asm_t *a, FILE *fp)
     const char  **files = NULL;
     uint32_t     *fileoff = NULL;
     size_t        nfiles = 0, nsyms = 0, i, j;
-    uint32_t      nrels = 0;
+    uint32_t      nrels = 0, ndbg = 0;
     sym_t        *s;
     int           ok;
-
-    if (a -> has_datasym)
-    {
-        fprintf (stderr, "v32as: datasym cannot be used in a relocatable object (-C)\n");
-        return (-1);
-    }
+    int           v2 = a -> has_datasym || asm_cmap_loaded ();      // flag 16, 4-word debug records
 
     for (s = a -> first; s != NULL; s = s -> order)
     {
@@ -2041,7 +2164,8 @@ int  asm_write_object (asm_t *a, FILE *fp)
     {
         uint32_t  flags = (tab[i] -> defined ? 1 : 0) | (tab[i] -> global ? 2 : 0)
                         | (tab[i] -> external ? 4 : 0)
-                        | (tab[i] -> defined && tab[i] -> kind == 'F' ? 8 : 0);
+                        | (tab[i] -> defined && tab[i] -> kind == 'F' ? 8 : 0)
+                        | (tab[i] -> datasym ? 16 : 0);
 
         buf_u32 (&body, str_add (&str, tab[i] -> name));
         buf_u32 (&body, tab[i] -> defined ? tab[i] -> addr : 0);
@@ -2078,10 +2202,33 @@ int  asm_write_object (asm_t *a, FILE *fp)
         nrels++;
     }
 
-    // debug records; file names are stored once each
+    // debug records; file names are stored once each. With --map the C file and line replace the
+    // assembly ones (instructions the map does not know are left out, as in -g --map) and the
+    // function name travels along as a fourth word
     for (i = 0; i < a -> nrec; i++)
     {
-        for (j = 0; j < nfiles && strcmp (files[j], a -> rec[i].file) != 0; j++)
+        const char      *file = a -> rec[i].file;
+        int              line = a -> rec[i].line;
+        const mapent_t  *hit = NULL;
+        uint32_t         func = 0xFFFFFFFFu;
+
+        if (asm_cmap_loaded ())
+        {
+            char  *nf = norm_path (a -> rec[i].file);
+
+            hit = cmap_find (the_cmap, nf, a -> rec[i].line);
+            free (nf);
+
+            if (hit == NULL)
+            {
+                continue;
+            }
+
+            file = hit -> cfile;
+            line = hit -> cline;
+        }
+
+        for (j = 0; j < nfiles && strcmp (files[j], file) != 0; j++)
         {
         }
 
@@ -2089,22 +2236,34 @@ int  asm_write_object (asm_t *a, FILE *fp)
         {
             files   = xrealloc (files, (nfiles + 1) * sizeof (char *));
             fileoff = xrealloc (fileoff, (nfiles + 1) * sizeof (uint32_t));
-            files[nfiles]   = a -> rec[i].file;
-            fileoff[nfiles] = str_add (&str, a -> rec[i].file);
+            files[nfiles]   = file;
+            fileoff[nfiles] = str_add (&str, file);
             nfiles++;
+        }
+
+        if (hit != NULL && hit -> func != NULL)
+        {
+            func = str_add (&str, hit -> func);
         }
 
         buf_u32 (&body, a -> rec[i].word);
         buf_u32 (&body, fileoff[j]);
-        buf_u32 (&body, (uint32_t) a -> rec[i].line);
+        buf_u32 (&body, (uint32_t) line);
+
+        if (v2)
+        {
+            buf_u32 (&body, func);
+        }
+
+        ndbg++;
     }
 
     buf_put (&out, "V32-VOBJ", 8);
-    buf_u32 (&out, 1);                                  // format version
+    buf_u32 (&out, v2 ? 2 : 1);                         // format version
     buf_u32 (&out, (uint32_t) a -> nwords);
     buf_u32 (&out, (uint32_t) nsyms);
     buf_u32 (&out, nrels);
-    buf_u32 (&out, (uint32_t) a -> nrec);
+    buf_u32 (&out, ndbg);
     buf_u32 (&out, (uint32_t) str.n);
     buf_put (&out, body.p, body.n);
     buf_put (&out, str.p, str.n);

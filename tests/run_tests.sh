@@ -185,5 +185,40 @@ for n in am al au; do "$BIN" -C -o "$T/$n.v32ob" "$T/$n.asm" 2>/dev/null; done
 "$LD" --v32x --data 1 --entry 99 -o "$T/x.x" "$T/am.v32ob" "$T/al.v32ob" 2>/dev/null && bad "--v32x entry outside the image" || ok
 mkdir -p "$T/lib"; cp "$T/libx.a" "$T/lib/x.v32a"
 "$LD" -o "$T/ar4.vbin" "$T/am.v32ob" -L "$T/lib" -l x 2>/dev/null && cmp -s "$T/ar1.vbin" "$T/ar4.vbin" && ok || bad "-l finds NAME.v32a"
+# VA-1 bug: a symbol's datasym flag was never initialised, so code relocations came out as ',D' (poisoned heap shows it)
+for pert in 0 165 90; do
+  ( cd reloc && MALLOC_PERTURB_=$pert "$BIN" -w -o "$T/k.vbin" -r "$T/k.rel" kind_D.asm ) 2>/dev/null
+  cmp -s "$T/k.rel" reloc/kind_D.rel && ok || bad "reloc kinds with MALLOC_PERTURB_=$pert"
+done
+# VA-2/3/4/5: datasym and --map through objects, partial links (v32ld -R), --map in diagnostics
+( cd link2
+  "$BIN" -C -o "$T/d1.v32ob" d1.asm && "$BIN" -C -o "$T/d2.v32ob" d2.asm \
+    && "$LD" -o "$T/ds.vbin" -r "$T/ds.rel" "$T/d1.v32ob" "$T/d2.v32ob" 2>/dev/null \
+    && cmp -s "$T/ds.rel" ds.rel && echo ok || echo "FAIL: datasym through objects (-r kinds)"
+  "$LD" -R -o "$T/dp.v32ob" "$T/d1.v32ob" "$T/d2.v32ob" 2>/dev/null \
+    && "$LD" -o "$T/dp.vbin" -r "$T/dp.rel" "$T/dp.v32ob" 2>/dev/null \
+    && cmp -s "$T/dp.vbin" "$T/ds.vbin" && cmp -s "$T/dp.rel" ds.rel && echo ok || echo "FAIL: partial link of datasym objects"
+  "$BIN" -C --map c.map -o "$T/c1.v32ob" c1.asm && "$BIN" -C --map c.map -o "$T/c2.v32ob" c2.asm \
+    && "$LD" -g -o "$T/cm.vbin" "$T/c1.v32ob" "$T/c2.v32ob" 2>/dev/null \
+    && cmp -s "$T/cm.vbin.debug" cmap.debug && echo ok || echo "FAIL: -C --map then v32ld -g"
+  "$BIN" -g --map one.map -o "$T/one.vbin" one.asm 2>/dev/null \
+    && cmp -s "$T/one.vbin.debug" cmap.debug && echo ok || echo "FAIL: -g --map on the joined source"
+  "$LD" -R -o "$T/cp.v32ob" "$T/c1.v32ob" "$T/c2.v32ob" 2>/dev/null \
+    && "$LD" -g -o "$T/cp.vbin" "$T/cp.v32ob" 2>/dev/null \
+    && cmp -s "$T/cp.vbin.debug" cmap.debug && echo ok || echo "FAIL: partial link keeps the map records"
+  "$LD" -R -o "$T/c1p.v32ob" "$T/c1.v32ob" 2>/dev/null \
+    && "$LD" -R -o "$T/cq.v32ob" "$T/c1p.v32ob" "$T/c2.v32ob" 2>/dev/null \
+    && "$LD" -o "$T/cq.vbin" "$T/cq.v32ob" 2>/dev/null && cmp -s "$T/cq.vbin" "$T/cm.vbin" && echo ok \
+    || echo "FAIL: two-step partial link differs from the direct link"
+  "$LD" -R -g -o "$T/x.v32ob" "$T/c1.v32ob" "$T/c2.v32ob" 2>/dev/null && echo "FAIL: -R with -g accepted" || echo ok
+  # a diagnostic names the C line: exact entry, or the nearest earlier one
+  printf 'u.asm,3,u.c,5,main\n' > "$T/u.map"
+  printf '_start:\n  mov R0, 1\n  mov R1, _nowhere\n  jmp _nowhere2\n' > "$T/u.asm"
+  "$BIN" --map "$T/u.map" -o "$T/u.vbin" "$T/u.asm" 2>&1 | grep -q 'u.c:5: note: .* generated from here' && echo ok || echo "FAIL: --map note for a diagnostic"
+  "$BIN" --map "$T/u.map" -o "$T/u.vbin" "$T/u.asm" 2>&1 | grep -q 'u.c:5: note: .* follows the code generated from here' && echo ok || echo "FAIL: --map note for a later line"
+) > "$T/va2out" 2>&1
+grep '^FAIL' "$T/va2out"
+pass=$((pass + $(grep -c '^ok' "$T/va2out")))
+fail=$((fail + $(grep -c '^FAIL' "$T/va2out")))
 echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

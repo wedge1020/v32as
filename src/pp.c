@@ -857,6 +857,8 @@ static void  vmsg (pp_t *p, const char *kind, int line, int col, const char *fmt
     vfprintf (stderr, fmt, ap);
     fputc    ('\n', stderr);
 
+    asm_cmap_note (f -> name, line);            // --map: the C line this assembly line came from
+
     for (k = p -> nctx - 1; k >= 0; k--)
     {
         const ctx_t  *c = &p -> ctx[k];

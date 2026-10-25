@@ -27,7 +27,9 @@
 #define  SYM_GLOBAL   2u
 #define  SYM_EXTERN   4u
 #define  SYM_CODE     8u        // the label is followed by code (set by v32as -C)
+#define  SYM_DATASYM  16u       // a datasym: the base of the data, value 0 wherever the object goes (version 2)
 #define  NO_SYMBOL    0xFFFFFFFFu
+#define  NO_STRING    0xFFFFFFFFu
 
 typedef struct
 {
@@ -57,6 +59,7 @@ typedef struct
 {
     const char     *path;
     unsigned char  *raw;
+    uint32_t        version, dbgsz;     // dbgsz: bytes per debug record (12; 16 in version 2: + function name)
     uint32_t        nwords, nsyms, nrels, ndbg, strsize;
     const unsigned char  *words, *syms, *rels, *dbg;
     const char     *str;
@@ -124,11 +127,14 @@ static int  parse_object (object_t *o, const char *path, unsigned char *buf, siz
         return (-1);
     }
 
-    if (get32 (buf + 8) != 1)
+    if (get32 (buf + 8) != 1 && get32 (buf + 8) != 2)
     {
         fprintf (stderr, "v32ld: %s: unsupported object format version %u\n", path, get32 (buf + 8));
         return (-1);
     }
+
+    o -> version = get32 (buf + 8);
+    o -> dbgsz   = o -> version == 2 ? 16 : 12;
 
     o -> raw     = own ? buf : NULL;
     o -> nwords  = get32 (buf + 12);
@@ -137,8 +143,8 @@ static int  parse_object (object_t *o, const char *path, unsigned char *buf, siz
     o -> ndbg    = get32 (buf + 24);
     o -> strsize = get32 (buf + 28);
 
-    need = 32 + 4 * (size_t) o -> nwords + 12 * ((size_t) o -> nsyms + o -> nrels + o -> ndbg)
-           + o -> strsize;
+    need = 32 + 4 * (size_t) o -> nwords + 12 * ((size_t) o -> nsyms + o -> nrels)
+           + (size_t) o -> dbgsz * o -> ndbg + o -> strsize;
 
     if (need != size)
     {
@@ -150,7 +156,7 @@ static int  parse_object (object_t *o, const char *path, unsigned char *buf, siz
     o -> syms  = o -> words + 4 * (size_t) o -> nwords;
     o -> rels  = o -> syms + 12 * (size_t) o -> nsyms;
     o -> dbg   = o -> rels + 12 * (size_t) o -> nrels;
-    o -> str   = (const char *) (o -> dbg + 12 * (size_t) o -> ndbg);
+    o -> str   = (const char *) (o -> dbg + (size_t) o -> dbgsz * o -> ndbg);
 
     if (o -> strsize == 0 || o -> str[o -> strsize - 1] != 0)
     {
@@ -333,6 +339,285 @@ static int  debug_mode_not_program (int debug, dbgmode_t m)
     return (debug && m != DBG_PROGRAM);
 }
 
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// -R: a partial link. The objects are joined into one object that still has the relocations:
+// words are concatenated, a symbol that is defined moves by the start of its object, an
+// 'extern' that another object defines is turned into a reference to that definition, and
+// the rest stay externs. Linking the result is the same as linking the pieces.
+//
+typedef struct
+{
+    unsigned char  *p;
+    size_t          n, cap;
+}
+obuf_t;
+
+static void  obuf_put (obuf_t *b, const void *data, size_t n)
+{
+    if (b -> n + n > b -> cap)
+    {
+        b -> cap = (b -> n + n) * 2 + 256;
+        b -> p   = xrealloc (b -> p, b -> cap);
+    }
+
+    memcpy (b -> p + b -> n, data, n);
+    b -> n += n;
+}
+
+static void  obuf_u32 (obuf_t *b, uint32_t v)
+{
+    unsigned char  t[4] = { (unsigned char) v, (unsigned char) (v >> 8), (unsigned char) (v >> 16),
+                            (unsigned char) (v >> 24) };
+
+    obuf_put (b, t, 4);
+}
+
+// strings of the new string table, each stored once
+typedef struct
+{
+    obuf_t        tab;
+    const char  **s;
+    uint32_t     *off;
+    size_t        n, cap;
+}
+strtab_t;
+
+static uint32_t  strtab_add (strtab_t *t, const char *str)
+{
+    size_t  i;
+
+    for (i = 0; i < t -> n; i++)
+    {
+        if (strcmp (t -> s[i], str) == 0)
+        {
+            return (t -> off[i]);
+        }
+    }
+
+    if (t -> n == t -> cap)
+    {
+        t -> cap = t -> cap ? t -> cap * 2 : 256;
+        t -> s   = xrealloc (t -> s, t -> cap * sizeof (char *));
+        t -> off = xrealloc (t -> off, t -> cap * sizeof (uint32_t));
+    }
+
+    t -> s[t -> n]   = str;
+    t -> off[t -> n] = (uint32_t) t -> tab.n;
+    t -> n++;
+    obuf_put (&t -> tab, str, strlen (str) + 1);
+
+    return (t -> off[t -> n - 1]);
+}
+
+typedef struct
+{
+    const char  *name;
+    uint32_t     value;
+    uint32_t     flags;
+}
+nsym_t;
+
+static void  put_le32 (unsigned char *p, uint32_t v)
+{
+    p[0] = (unsigned char) v;
+    p[1] = (unsigned char) (v >> 8);
+    p[2] = (unsigned char) (v >> 16);
+    p[3] = (unsigned char) (v >> 24);
+}
+
+static int  partial_link (object_t *obj, int nobj, const char *output)
+{
+    nsym_t     *ns = NULL;
+    size_t      nns = 0, capn = 0, total = 0, i, k, m;
+    uint32_t  **map = xrealloc (NULL, (size_t) nobj * sizeof (uint32_t *));
+    obuf_t      body = { 0 }, out = { 0 };
+    strtab_t    st;
+    uint32_t    nrels = 0, ndbg = 0;
+    int         v2 = 0, pass;
+    FILE       *fp;
+
+    memset (&st, 0, sizeof (st));
+
+    for (i = 0; i < (size_t) nobj; i++)
+    {
+        map[i] = xrealloc (NULL, ((size_t) obj[i].nsyms + 1) * sizeof (uint32_t));
+        v2    |= obj[i].version == 2;
+        obj[i].start = (uint32_t) total;
+        total += obj[i].nwords;
+    }
+
+    // pass 0: the defined symbols (a datasym once per name); pass 1: the externs
+    for (pass = 0; pass < 2; pass++)
+    {
+        for (i = 0; i < (size_t) nobj; i++)
+        {
+            for (k = 0; k < obj[i].nsyms; k++)
+            {
+                osym_t    s = osym (&obj[i], (uint32_t) k);
+                int       defined = (s.flags & SYM_DEFINED) != 0;
+                nsym_t    n;
+
+                if (pass == 0 && !defined)  { continue; }
+                if (pass == 1 && defined)   { continue; }
+
+                n.name  = s.name;
+                n.value = s.flags & SYM_DATASYM ? 0 : s.value + (defined ? obj[i].start : 0);
+                n.flags = s.flags;
+
+                if (!defined || (s.flags & SYM_DATASYM))
+                {
+                    // one entry per name for externs and datasyms; an extern another object defines
+                    // as a global is that definition
+                    for (m = 0; m < nns; m++)
+                    {
+                        if (strcmp (ns[m].name, s.name) != 0)  { continue; }
+
+                        if (s.flags & SYM_DATASYM ? (ns[m].flags & SYM_DATASYM) != 0
+                                                  : ((ns[m].flags & SYM_DEFINED) ? (ns[m].flags & SYM_GLOBAL) != 0
+                                                                                 : 1))
+                        {
+                            break;
+                        }
+                    }
+
+                    if (m < nns)
+                    {
+                        map[i][k] = (uint32_t) m;
+                        continue;
+                    }
+                }
+
+                if (nns == capn)
+                {
+                    capn = capn ? capn * 2 : 256;
+                    ns   = xrealloc (ns, capn * sizeof (nsym_t));
+                }
+
+                ns[nns]  = n;
+                map[i][k] = (uint32_t) nns;
+                nns++;
+            }
+        }
+    }
+
+    for (i = 0; i < nns; i++)
+    {
+        v2 |= (ns[i].flags & SYM_DATASYM) != 0;
+    }
+
+    for (i = 0; i < (size_t) nobj; i++)
+    {
+        for (k = 0; k < obj[i].nwords; k++)
+        {
+            obuf_u32 (&body, get32 (obj[i].words + 4 * k));
+        }
+    }
+
+    for (i = 0; i < nns; i++)
+    {
+        obuf_u32 (&body, strtab_add (&st, ns[i].name));
+        obuf_u32 (&body, ns[i].value);
+        obuf_u32 (&body, ns[i].flags);
+    }
+
+    for (i = 0; i < (size_t) nobj; i++)
+    {
+        for (k = 0; k < obj[i].nrels; k++)
+        {
+            const unsigned char  *p = obj[i].rels + 12 * k;
+            orel_t                r = { get32 (p), get32 (p + 4), get32 (p + 8) };
+            uint32_t              sym, word;
+
+            if (r.word >= obj[i].nwords || (r.sym != NO_SYMBOL && r.sym >= obj[i].nsyms))
+            {
+                fprintf (stderr, "v32ld: %s: corrupt object (relocation out of range)\n", obj[i].path);
+                return (2);
+            }
+
+            word = get32 (obj[i].words + 4 * (size_t) r.word);
+
+            if (r.sym == NO_SYMBOL)
+            {
+                word = r.addend + obj[i].start;
+            }
+            else
+            {
+                sym = map[i][r.sym];
+
+                if (ns[sym].flags & SYM_DATASYM)        { word = r.addend; }
+                else if (ns[sym].flags & SYM_DEFINED)   { word = ns[sym].value + r.addend; }
+            }
+
+            // the word as assembled at base 0 (an extern's stays as the object had it)
+            put_le32 (body.p + 4 * ((size_t) obj[i].start + r.word), word);
+        }
+    }
+
+    // relocations, in word order (objects are in order and each object's list is)
+    {
+        obuf_t  rb = { 0 };
+
+        for (i = 0; i < (size_t) nobj; i++)
+        {
+            for (k = 0; k < obj[i].nrels; k++)
+            {
+                const unsigned char  *p = obj[i].rels + 12 * k;
+                uint32_t              w = get32 (p), sy = get32 (p + 4), ad = get32 (p + 8);
+
+                obuf_u32 (&rb, obj[i].start + w);
+                obuf_u32 (&rb, sy == NO_SYMBOL ? NO_SYMBOL : map[i][sy]);
+                obuf_u32 (&rb, sy == NO_SYMBOL ? ad + obj[i].start : ad);
+                nrels++;
+            }
+        }
+
+        obuf_put (&body, rb.p, rb.n);
+        free (rb.p);
+    }
+
+    for (i = 0; i < (size_t) nobj; i++)
+    {
+        for (k = 0; k < obj[i].ndbg; k++)
+        {
+            const unsigned char  *p = obj[i].dbg + (size_t) obj[i].dbgsz * k;
+
+            obuf_u32 (&body, obj[i].start + get32 (p));
+            obuf_u32 (&body, strtab_add (&st, ostr (&obj[i], get32 (p + 4))));
+            obuf_u32 (&body, get32 (p + 8));
+
+            if (v2)
+            {
+                uint32_t  fn = obj[i].version == 2 ? get32 (p + 12) : NO_STRING;
+
+                obuf_u32 (&body, fn == NO_STRING ? NO_STRING : strtab_add (&st, ostr (&obj[i], fn)));
+            }
+
+            ndbg++;
+        }
+    }
+
+    obuf_put (&out, "V32-VOBJ", 8);
+    obuf_u32 (&out, v2 ? 2 : 1);
+    obuf_u32 (&out, (uint32_t) total);
+    obuf_u32 (&out, (uint32_t) nns);
+    obuf_u32 (&out, nrels);
+    obuf_u32 (&out, ndbg);
+    obuf_u32 (&out, (uint32_t) st.tab.n);
+    obuf_put (&out, body.p, body.n);
+    obuf_put (&out, st.tab.p, st.tab.n);
+
+    fp = fopen (output, "wb");
+
+    if (fp == NULL || fwrite (out.p, 1, out.n, fp) != out.n || fclose (fp) != 0)
+    {
+        fprintf (stderr, "v32ld: cannot write '%s': %s\n", output, strerror (errno));
+        return (2);
+    }
+
+    return (0);
+}
+
 static void  usage (FILE *fp)
 {
     fprintf (fp,
@@ -358,7 +643,11 @@ static void  usage (FILE *fp)
         "                       scanned after the objects; a member is linked in only when it defines\n"
         "                       a symbol that is still undefined)\n"
         "  -A, --archive=FILE   make an archive FILE of the objects given, instead of linking\n"
-        "  -r, --relocs=FILE    write 'index,value' for every word that holds an address\n"
+        "  -r, --relocs=FILE    write 'index,value[,kind]' for every word that holds an address (also\n"
+        "      --emit-relocs=FILE  spelled --emit-relocs); with a datasym in the objects the kind is C (code\n"
+        "                       address) or D (data address), as in 'v32as -r'\n"
+        "  -R, --relocatable    do not link: join the objects into one object (-o FILE, default a.v32ob)\n"
+        "                       that keeps the relocations and the externs still undefined\n"
         "  -w, --no-warnings    do not warn about unused global symbols\n"
         "  -h, --help           display this usage information and exit\n"
         "  -V, --version        display the version and exit\n"
@@ -382,6 +671,8 @@ int  main (int argc, char **argv)
         { "archive",     required_argument, 0, 'A' },
         { "v32x",        no_argument,       0, 1005 },
         { "data",        required_argument, 0, 1006 },
+        { "emit-relocs", required_argument, 0, 'r' },
+        { "relocatable", no_argument,       0, 'R' },
         { "no-warnings", no_argument,       0, 'w' },
         { "help",        no_argument,       0, 'h' },
         { "version",     no_argument,       0, 'V' },
@@ -407,14 +698,17 @@ int  main (int argc, char **argv)
     const char **reported = NULL;
     size_t       nrep = 0;
     FILE        *fp;
+    char        *wkind = NULL;
+    int          has_datasym = 0, partial = 0;
 
-    while ((c = getopt_long (argc, argv, "bcO:o:g::r:whVL:l:A:", long_options, NULL)) != -1)
+    while ((c = getopt_long (argc, argv, "bcO:o:g::r:RwhVL:l:A:", long_options, NULL)) != -1)
     {
         switch (c)
         {
             case 'b':  bios = 1;                  break;
             case 'c':  cart = 1;                  break;
             case 'w':  no_warn = 1;               break;
+            case 'R':  partial = 1;               break;
             case 'o':  output = optarg;           break;
             case 'r':  relocs = optarg;           break;
             case 1003: symbols = optarg;          break;
@@ -486,6 +780,11 @@ int  main (int argc, char **argv)
         }
     }
 
+    if (partial && strcmp (output, "a.vbin") == 0)
+    {
+        output = "a.v32ob";
+    }
+
     if (archive_out != NULL)
     {
         return (make_archive (archive_out, argv + optind, argc - optind));
@@ -519,6 +818,13 @@ int  main (int argc, char **argv)
     {
         fprintf (stderr, "v32ld: --v32x cannot be combined with -b, -c or -g vbin/v32 "
                          "(the base is -O ADDR, default 0x%X; addresses in -g are the program's)\n", V32X_WINDOW_BASE);
+        return (2);
+    }
+
+    if (partial && (bios || cart || origin_set || debug || relocs || symbols || entry || v32x))
+    {
+        fprintf (stderr, "v32ld: --relocatable only joins objects: it cannot be combined with -b, -c, -O, -g, -r,\n"
+                         "       --symbols, --entry or --v32x (do those when linking the result)\n");
         return (2);
     }
 
@@ -766,6 +1072,11 @@ int  main (int argc, char **argv)
         }
     }
 
+    if (partial)
+    {
+        return (errors > 0 ? 1 : partial_link (obj, nobj, output));
+    }
+
     if (v32x)
     {
         if (entry != NULL)
@@ -802,8 +1113,18 @@ int  main (int argc, char **argv)
 
     // the image: the objects' words, then every relocation applied
     words = xrealloc (NULL, total * sizeof (uint32_t));
+    wkind = xrealloc (NULL, total + 1);
 
     memset (words, 0, total * sizeof (uint32_t));
+    memset (wkind, 'C', total + 1);
+
+    for (i = 0; i < nobj; i++)
+    {
+        for (k = 0; k < obj[i].nsyms; k++)
+        {
+            has_datasym |= (osym (&obj[i], (uint32_t) k).flags & SYM_DATASYM) != 0;
+        }
+    }
 
     for (i = 0; i < nobj; i++)
     {
@@ -844,7 +1165,12 @@ int  main (int argc, char **argv)
             {
                 osym_t  s = osym (&obj[i], r.sym);
 
-                if (s.flags & SYM_DEFINED)
+                if (s.flags & SYM_DATASYM)
+                {
+                    value = r.addend;                           // the base of the data: not moved by the link
+                    wkind[obj[i].start + r.word] = 'D';
+                }
+                else if (s.flags & SYM_DEFINED)
                 {
                     value = base + obj[i].start + s.value + r.addend;
                 }
@@ -974,7 +1300,7 @@ int  main (int argc, char **argv)
 
         if (lead > 0)
         {
-            fprintf (fp, "1,0x%08X\n", words[1]);
+            fprintf (fp, has_datasym ? "1,0x%08X,C\n" : "1,0x%08X\n", words[1]);
         }
 
         for (i = 0; i < nobj; i++)
@@ -983,7 +1309,14 @@ int  main (int argc, char **argv)
             {
                 uint32_t  w = get32 (obj[i].rels + 12 * k);
 
-                fprintf (fp, "%u,0x%08X\n", obj[i].start + w, words[obj[i].start + w]);
+                if (has_datasym)
+                {
+                    fprintf (fp, "%u,0x%08X,%c\n", obj[i].start + w, words[obj[i].start + w], wkind[obj[i].start + w]);
+                }
+                else
+                {
+                    fprintf (fp, "%u,0x%08X\n", obj[i].start + w, words[obj[i].start + w]);
+                }
             }
         }
 
@@ -1009,7 +1342,7 @@ int  main (int argc, char **argv)
             {
                 osym_t  s = osym (&obj[i], (uint32_t) k);
 
-                if (!(s.flags & SYM_DEFINED))
+                if (!(s.flags & SYM_DEFINED) || (s.flags & SYM_DATASYM))
                 {
                     continue;
                 }
@@ -1052,7 +1385,7 @@ int  main (int argc, char **argv)
             {
                 osym_t  s = osym (&obj[i], (uint32_t) k);
 
-                if (!(s.flags & SYM_DEFINED))
+                if (!(s.flags & SYM_DEFINED) || (s.flags & SYM_DATASYM))
                 {
                     continue;
                 }
@@ -1084,7 +1417,8 @@ int  main (int argc, char **argv)
         {
             for (k = 0; k < obj[i].ndbg; k++)
             {
-                const unsigned char  *p = obj[i].dbg + 12 * k;
+                const unsigned char  *p = obj[i].dbg + (size_t) obj[i].dbgsz * k;
+                uint32_t              fn = obj[i].version == 2 ? get32 (p + 12) : NO_STRING;
                 uint32_t              word = obj[i].start + get32 (p);
                 uint32_t              addr = base + word;
                 size_t                lo = 0, hi = nl;
@@ -1101,7 +1435,11 @@ int  main (int argc, char **argv)
                 put_path (fp, ostr (&obj[i], get32 (p + 4)));
                 fprintf (fp, ",%u", get32 (p + 8));
 
-                if (lo < nl && lab[lo].addr == addr)
+                if (fn != NO_STRING)
+                {
+                    fprintf (fp, ",%s", ostr (&obj[i], fn));            // the function, from --map
+                }
+                else if (lo < nl && lab[lo].addr == addr)
                 {
                     fprintf (fp, ",%s", lab[lo].name);
                 }

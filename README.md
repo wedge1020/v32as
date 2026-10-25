@@ -33,9 +33,30 @@ design notes, `tests/`, `experiments/`; `make` puts generated files in `build/` 
   with `-L DIR -l NAME` (libNAME.a) are mined after the objects, a member being linked only when it defines a symbol still
   undefined; `--entry SYMBOL` puts a two-word `jmp SYMBOL` first unless the symbol is already the first word;
   `--v32x --data N [--entry SYMBOL|OFFSET]` writes a V32X executable (header + image linked at 0x100000).
-  `undefined reference to `x' (first used in a.v32ob)`, once per symbol. Not done: relocatable (`-r` object) output.
+  `undefined reference to `x' (first used in a.v32ob)`, once per symbol.
 - **`-MD -MMD -MP -MF FILE -MT TARGET` (VA-6)**: the sources, `%include` files and `datafile` files read, as a Makefile rule
   (default file: the output name with `.d`).
+
+## Round-10 additions (answers to the V32DOS proposal)
+
+- **Bug fixed (VA-1)**: a symbol's `datasym` flag was never initialised, so on larger inputs ordinary labels read
+  as datasyms and `-r` listed code relocations as `,D` (the V32DOS `byteaddr` module: `call __function_main`).
+  `tests/reloc/` runs the reduced repro with the heap poisoned (`MALLOC_PERTURB_`).
+- **`datasym` in objects (VA-1)**: `v32as -C` accepts `datasym`, the object records it (format version 2) and
+  `v32ld -r FILE` (also `--emit-relocs FILE`) writes the third column, `,C` or `,D`, as `v32as -r` does. A datasym
+  has the value 0 in every object and is not moved by the link.
+- **`-C` with `--map` (VA-2)**: the object stores the C file and line (and the function) of each instruction in place
+  of the assembly ones; instructions the map does not know are left out, as in `-g --map`. `v32ld -g` then writes
+  the C-level `.debug` file, the same as `v32as -g --map` would on the joined source. (Object format version 2.)
+- **Partial link (VA-3)**: `v32ld -R -o ab.v32ob a.v32ob b.v32ob` (not `-r`, which is the relocation list) joins
+  objects into one object. Globals stay global, an `extern` another input defines becomes a reference to it, the
+  others stay `extern`; relocations, datasyms and debug records are kept, so linking `ab.v32ob` equals linking
+  `a.v32ob b.v32ob`. Archives and `-l` work as in a full link. It refuses `-b -c -O -g -r --symbols --entry --v32x`.
+- **Diagnostics through `--map` (VA-4)**: with `--map FILE` (no `-g` needed) every error and warning of the
+  assembler or the preprocessor is followed by `a.c:123: note: the assembly line above was generated from here`
+  (the function is named when the map has it), or, for a line with no entry of its own, by
+  `... it follows the code generated from here` naming the nearest earlier mapped line.
+- **The `-r` file (VA-5)**: documented under Usage.
 
 ## Usage
 
@@ -54,8 +75,10 @@ a VBIN for a cartridge. (Reading STDIN, the output goes to STDOUT.)
   (`-B/--binary` still exists, and only says what is already the default.)
 - `-w/--no-warnings` inhibits all warnings.
 - `-g/--debug[=MODE]` also writes `FILE.debug` (CSV `address,file,line[,label]`, one line per instruction) next to the output file. Plain `-g` is byte-identical to the official assembler's `-g program` (absolute word addresses, e.g. `0x20000000`). `-g vbin` / `-g v32` give real byte offsets in the .vbin (0x0C header) or .v32 (0x8C header) file; the official tool's versions of those two print wrapped-around values. A source file literally named `program`, `vbin` or `v32` must be written `./program`.
-- `--map FILE` (with `-g`): FILE is the compiler's debug file (`asmfile,asmline,cfile,cline[,function]`, as `v32cc -g` writes it). The `.debug` file then has the same layout, but each instruction names the C file and line (and the function as the label column), which is what v32sim's C overlay reads. Instructions whose assembly line is not in FILE are left out.
-- `-r/--relocs FILE` writes `index,0xVALUE` for every word that holds an address resolved from a label (code or data, `label+N` included) or computed from the instruction's own address (`MOV Rn, IP`, the `IR`/`IV` patch addresses). Plain numbers that happen to look like addresses are never listed, so a loader can relocate a module by adding the base difference to those words. A source that declares `datasym NAME` (enhanced syntax; the value of `NAME` is 0, so `NAME+17` is a word holding 17) gets a third column, `,C` for a code address (moves with the load address) and `,D` for a reference to a datasym (moves with the base of the module's data). `v32cc --pic-data` writes every global's address that way. A datasym cannot be used with `-C`.
+- `--map FILE`: FILE is the compiler's debug file (`asmfile,asmline,cfile,cline[,function]`, as `v32cc -g` writes it). The `.debug` file then has the same layout, but each instruction names the C file and line (and the function as the label column), which is what v32sim's C overlay reads. Instructions whose assembly line is not in FILE are left out. `--map` also works with `-C` and for diagnostics, see Round-10.
+- `-r/--relocs FILE` writes `index,0xVALUE` for every word that holds an address resolved from a label (code or data, `label+N` included) or computed from the instruction's own address (`MOV Rn, IP`, the `IR`/`IV` patch addresses). Plain numbers that happen to look like addresses are never listed, so a loader can relocate a module by adding the base difference to those words. A source that declares `datasym NAME` (enhanced syntax; the value of `NAME` is 0, so `NAME+17` is a word holding 17) gets a third column, `,C` for a code address (moves with the load address) and `,D` for a reference to a datasym (moves with the base of the module's data). `v32cc --pic-data` writes every global's address that way. A datasym can be used with `-C` too; `v32ld -r` then writes the same column.
+
+  **Format of the `-r` file** (a loader may depend on it): one line per word, sorted by `index` (ascending, no duplicates); `index` is the **zero-based word index into the image**, not a byte offset and not counting the 3-word VBIN header (the first instruction is word 0); `0xVALUE` is the value **as assembled**, i.e. at the base the image was assembled or linked for, so a loader that places the image at `new_base` adds `new_base - assembled_base` to a `C` word (and, for a `D` word, the displacement of the data) and leaves other words alone; the optional third column is `C` or `D` and is present on every line if the source (or any linked object) declares a `datasym`, on none otherwise. Both `v32as -r` and `v32ld -r` write exactly this.
 - `-s/--step` pauses per statement, `-v/--verbose` shows the encoded bit fields
 - no files and a terminal on stdin starts the REPL: `.help .labels .dump .reset .quit`
 - `-` reads stdin; the legacy bare words (`bios`, `cart`, ...) still work

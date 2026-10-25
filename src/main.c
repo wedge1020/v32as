@@ -94,8 +94,9 @@ static void  usage (FILE *fp)
         "                       with other objects, debug info is stored in the object\n"
         "  -r, --relocs=FILE    write the list of words that hold an address (label references,\n"
         "                       code and data) as 'index,value' lines; for relocatable modules\n"
-        "      --map=FILE       with -g: FILE is v32cc's debug file (asmfile,asmline,cfile,cline[,func]);\n"
-        "                       the .debug file then names the C file and line of each instruction\n"
+        "      --map=FILE       FILE is v32cc's debug file (asmfile,asmline,cfile,cline[,func]): with -g\n"
+        "                       the .debug file names the C file and line of each instruction, with -C\n"
+        "                       the object does, and errors and warnings say which C line they come from\n"
         "      --symbols=FILE   write the label table: one 'address,name,kind' line per label (kind F:\n"
         "                       code, D: data); file-local labels only with --symbols-all, which\n"
         "                       also lists the compiler's global_* variables (kind V)\n"
@@ -818,10 +819,10 @@ int  main (int  argc, char **argv)
 
     if (opt.object)
     {
-        if (opt.bios || opt.cart || opt.origin_set || opt.debug || opt.relocs || opt.map
+        if (opt.bios || opt.cart || opt.origin_set || opt.debug || opt.relocs
             || opt.text || opt.none || opt.preprocess || opt.binary_explicit)
         {
-            fprintf (stderr, "v32as: --object cannot be combined with -b, -c, -O, -g, -r, --map, -T, -n, -E or -B "
+            fprintf (stderr, "v32as: --object cannot be combined with -b, -c, -O, -g, -r, -T, -n, -E or -B "
                              "(addresses and debug info are decided by the linker)\n");
             return (2);
         }
@@ -909,10 +910,24 @@ int  main (int  argc, char **argv)
         return (2);
     }
 
-    if (opt.map && !opt.debug)
+    if (opt.map != NULL)                // loaded now: errors and warnings use it too
     {
-        fprintf (stderr, "v32as: --map needs -g\n");
-        return (2);
+        FILE  *mfp = fopen (opt.map, "r");
+        int    bad;
+
+        if (mfp == NULL)
+        {
+            fprintf (stderr, "v32as: cannot read '%s': %s\n", opt.map, strerror (errno));
+            return (2);
+        }
+
+        bad = asm_cmap_load (mfp, opt.map);
+        fclose (mfp);
+
+        if (bad != 0)
+        {
+            return (2);
+        }
     }
 
     if (opt.relocs && (!opt.binary || opt.output == NULL))
@@ -1129,24 +1144,13 @@ int  main (int  argc, char **argv)
     {
         char   *path = malloc (strlen (opt.output) + 8);
         FILE   *dfp;
-        FILE   *mfp = NULL;
 
         sprintf (path, "%s.debug", opt.output);
         dfp = fopen (path, "w");
 
-        if (opt.map != NULL && (mfp = fopen (opt.map, "r")) == NULL)
-        {
-            fprintf (stderr, "v32as: cannot read '%s': %s\n", opt.map, strerror (errno));
-            rc = 2;
-        }
-
-        if (rc != 0)
-        {
-            /* nothing to write */
-        }
-        else if (dfp == NULL
-                 || (mfp != NULL ? asm_write_debug_map (&a, dfp, opt.debug_mode, mfp, opt.map)
-                                 : asm_write_debug (&a, dfp, opt.debug_mode)) != 0)
+        if (dfp == NULL
+            || (asm_cmap_loaded () ? asm_write_debug_map (&a, dfp, opt.debug_mode)
+                                   : asm_write_debug (&a, dfp, opt.debug_mode)) != 0)
         {
             fprintf (stderr, "v32as: cannot write '%s': %s\n", path, strerror (errno));
             rc = 2;
@@ -1155,11 +1159,6 @@ int  main (int  argc, char **argv)
         if (dfp != NULL)
         {
             fclose (dfp);
-        }
-
-        if (mfp != NULL)
-        {
-            fclose (mfp);
         }
 
         free (path);
