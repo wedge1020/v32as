@@ -282,7 +282,7 @@ _[A-Za-z0-9_]+":"       {
                                 && (k -> kind == KW_SYSREG
                                     || (k -> kind == KW_DIRECTIVE
                                         && (k -> cls == DIR_ZSTRING || k -> cls == DIR_GLOBAL
-                                            || k -> cls == DIR_EXTERN))))
+                                            || k -> cls == DIR_EXTERN || k -> cls == DIR_DATASYM))))
                             {
                                 k = NULL;
                             }
@@ -319,6 +319,7 @@ _[A-Za-z0-9_]+":"       {
                                             case DIR_POINTER:   return (T_DIR_POINTER);
                                             case DIR_GLOBAL:    return (T_DIR_GLOBAL);
                                             case DIR_EXTERN:    return (T_DIR_EXTERN);
+                                            case DIR_DATASYM:   return (T_DIR_DATASYM);
                                             default:            return (T_DIR_DATAFILE);
                                         }
 

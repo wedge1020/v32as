@@ -78,6 +78,7 @@ typedef void  *yyscan_t;
 %token T_DIR_DATAFILE        "'datafile'"
 %token T_DIR_GLOBAL          "'global'"
 %token T_DIR_EXTERN          "'extern'"
+%token T_DIR_DATASYM         "'datasym'"
 
 %token <op> T_OP_NONE        "instruction without operands"
 %token <op> T_OP_R           "single-register instruction"
@@ -237,6 +238,12 @@ directive
         { asm_data_begin (ctx); asm_data_file (ctx, &@2, $2); asm_data_end (ctx); }
     | T_DIR_GLOBAL global_list
     | T_DIR_EXTERN extern_list
+    | T_DIR_DATASYM datasym_list
+    ;
+
+datasym_list
+    : T_LABEL                        { asm_sym_datasym (ctx, &@1, $1); }
+    | datasym_list T_COMMA T_LABEL   { asm_sym_datasym (ctx, &@3, $3); }
     ;
 
 global_list

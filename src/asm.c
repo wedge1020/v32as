@@ -1480,6 +1480,8 @@ int  asm_write_debug (asm_t *a, FILE *fp, dbgmode_t mode)
 //     index    word index in the program (code and data), 0 is the first word
 //     address  the value the word holds in this assembly (a label's address plus
 //              any offset, or the IP-relative value), 0x%08X
+//     kind     only when the source declares a datasym: C (code address: moves with the
+//              load address) or D (data address: moves with the data base)
 //
 // The words listed are exactly those that were resolved from a label (or computed from
 // the instruction's own address), never numbers that merely look like addresses; a loader
@@ -1507,7 +1509,15 @@ int  asm_write_relocs (asm_t *a, FILE *fp)
 
         if (a -> rel[i].word < a -> nwords)
         {
-            fprintf (fp, "%u,0x%08X\n", a -> rel[i].word, a -> words[a -> rel[i].word]);
+            if (a -> has_datasym)
+            {
+                fprintf (fp, "%u,0x%08X,%c\n", a -> rel[i].word, a -> words[a -> rel[i].word],
+                         (a -> rel[i].sym != NULL && a -> rel[i].sym -> datasym) ? 'D' : 'C');
+            }
+            else
+            {
+                fprintf (fp, "%u,0x%08X\n", a -> rel[i].word, a -> words[a -> rel[i].word]);
+            }
         }
     }
 
@@ -1852,7 +1862,7 @@ int  asm_write_symbols (asm_t *a, FILE *fp, int all,
     {
         const char  *ln;
 
-        if (!s -> defined || s -> external)
+        if (!s -> defined || s -> external || s -> datasym)     // a datasym is a base, not an address
         {
             continue;
         }
@@ -1928,6 +1938,29 @@ void  asm_sym_declare (asm_t *a, const loc_t *loc, sym_t *s, int external)
     }
 }
 
+// datasym NAME: NAME is the base of the program's data, with the value 0. A reference such as "NAME + 17" is a word
+// that holds the number 17 and is listed by -r as a data relocation (kind D): a loader that places the data at B adds B.
+void  asm_sym_datasym (asm_t *a, const loc_t *loc, sym_t *s)
+{
+    a -> line_active = 1;
+
+    if (s -> defined && !s -> datasym)
+    {
+        asm_error (a, loc, "label '%s' is already defined, it cannot be a datasym", s -> name);
+    }
+    else if (s -> global || s -> external)
+    {
+        asm_error (a, loc, "label '%s' cannot be a datasym and global or extern", s -> name);
+    }
+    else
+    {
+        s -> datasym = 1;
+        s -> defined = 1;
+        s -> addr    = 0;
+        a -> has_datasym = 1;
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////
 //
 // Relocatable object (-C): see docs/OBJECT.md. All numbers are 32-bit little endian.
@@ -1979,6 +2012,12 @@ int  asm_write_object (asm_t *a, FILE *fp)
     uint32_t      nrels = 0;
     sym_t        *s;
     int           ok;
+
+    if (a -> has_datasym)
+    {
+        fprintf (stderr, "v32as: datasym cannot be used in a relocatable object (-C)\n");
+        return (-1);
+    }
 
     for (s = a -> first; s != NULL; s = s -> order)
     {

@@ -83,7 +83,8 @@ typedef enum
     DIR_POINTER,
     DIR_DATAFILE,
     DIR_GLOBAL,
-    DIR_EXTERN
+    DIR_EXTERN,
+    DIR_DATASYM
 }
 directive_t;
 
@@ -105,6 +106,7 @@ typedef struct sym
     int           defined;
     int           global;           // 'global': visible to the linker
     int           external;         // 'extern': defined in another object
+    int           datasym;          // 'datasym': the base of the program's data (value 0); references are data relocations
     const char   *gfile;            // where 'global' declared it (for diagnostics)
     int           gline;
     int           gcol;
@@ -199,6 +201,7 @@ typedef struct asm_ctx
     rel_t       *rel;
     size_t       nrel;
     size_t       relcap;
+    int          has_datasym;       // a 'datasym' was declared: -r lists the kind of each relocation
 
     // instruction -> source line records (for -g)
     dbgrec_t    *rec;
@@ -267,6 +270,7 @@ int     asm_write_vbin      (asm_t *a, FILE *fp);
 int     asm_write_debug     (asm_t *a, FILE *fp, dbgmode_t mode);
 int     asm_write_object    (asm_t *a, FILE *fp);
 void    asm_sym_declare     (asm_t *a, const loc_t *loc, sym_t *s, int external);
+void    asm_sym_datasym     (asm_t *a, const loc_t *loc, sym_t *s);
 int     asm_write_relocs    (asm_t *a, FILE *fp);
 int     asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode, FILE *cmap, const char *cmap_name);
 void    asm_print_labels    (asm_t *a, FILE *fp);
