@@ -1,7 +1,7 @@
 //
-// ld.c: v32ld, the linker for the relocatable objects (.v32ob) written by "v32as -C"
+// ld.c: v32asld, the linker for the relocatable objects (.v32ob) written by "v32as -C"
 //
-//     v32ld [-b|-c|-O ADDR] [-o FILE] [-g[MODE]] [-r FILE] [-w] OBJECT...
+//     v32asld [-b|-c|-O ADDR] [-o FILE] [-g[MODE]] [-r FILE] [-w] OBJECT...
 //
 // Objects are placed one after the other, in command line order (the first word of the
 // first object is the program's entry point). Every word the objects mark as an address
@@ -96,7 +96,7 @@ static void  *xrealloc (void *p, size_t n)
 
     if (p == NULL)
     {
-        fprintf (stderr, "v32ld: out of memory\n");
+        fprintf (stderr, "v32asld: out of memory\n");
         exit    (2);
     }
 
@@ -117,19 +117,19 @@ static int  parse_object (object_t *o, const char *path, unsigned char *buf, siz
 
     if (size < 32)
     {
-        fprintf (stderr, "v32ld: %s: not a v32as object (too short)\n", path);
+        fprintf (stderr, "v32asld: %s: not a v32as object (too short)\n", path);
         return (-1);
     }
 
     if (memcmp (buf, "V32-VOBJ", 8) != 0)
     {
-        fprintf (stderr, "v32ld: %s: not a v32as object (bad magic)\n", path);
+        fprintf (stderr, "v32asld: %s: not a v32as object (bad magic)\n", path);
         return (-1);
     }
 
     if (get32 (buf + 8) != 1 && get32 (buf + 8) != 2)
     {
-        fprintf (stderr, "v32ld: %s: unsupported object format version %u\n", path, get32 (buf + 8));
+        fprintf (stderr, "v32asld: %s: unsupported object format version %u\n", path, get32 (buf + 8));
         return (-1);
     }
 
@@ -148,7 +148,7 @@ static int  parse_object (object_t *o, const char *path, unsigned char *buf, siz
 
     if (need != size)
     {
-        fprintf (stderr, "v32ld: %s: corrupt object (size does not match its header)\n", path);
+        fprintf (stderr, "v32asld: %s: corrupt object (size does not match its header)\n", path);
         return (-1);
     }
 
@@ -160,7 +160,7 @@ static int  parse_object (object_t *o, const char *path, unsigned char *buf, siz
 
     if (o -> strsize == 0 || o -> str[o -> strsize - 1] != 0)
     {
-        fprintf (stderr, "v32ld: %s: corrupt object (string table)\n", path);
+        fprintf (stderr, "v32asld: %s: corrupt object (string table)\n", path);
         return (-1);
     }
 
@@ -175,7 +175,7 @@ static unsigned char  *read_file (const char *path, size_t *size)
 
     if (fp == NULL)
     {
-        fprintf (stderr, "v32ld: cannot read '%s': %s\n", path, strerror (errno));
+        fprintf (stderr, "v32asld: cannot read '%s': %s\n", path, strerror (errno));
         return (NULL);
     }
 
@@ -187,7 +187,7 @@ static unsigned char  *read_file (const char *path, size_t *size)
 
     if (n < 0 || fread (buf, 1, (size_t) n, fp) != (size_t) n)
     {
-        fprintf (stderr, "v32ld: cannot read '%s'\n", path);
+        fprintf (stderr, "v32asld: cannot read '%s'\n", path);
         fclose (fp);
         free   (buf);
         return (NULL);
@@ -237,7 +237,7 @@ static int  make_archive (const char *out, char **files, int nfiles)
 
     if (fp == NULL)
     {
-        fprintf (stderr, "v32ld: cannot write '%s': %s\n", out, strerror (errno));
+        fprintf (stderr, "v32asld: cannot write '%s': %s\n", out, strerror (errno));
         return (2);
     }
 
@@ -531,7 +531,7 @@ static int  partial_link (object_t *obj, int nobj, const char *output)
 
             if (r.word >= obj[i].nwords || (r.sym != NO_SYMBOL && r.sym >= obj[i].nsyms))
             {
-                fprintf (stderr, "v32ld: %s: corrupt object (relocation out of range)\n", obj[i].path);
+                fprintf (stderr, "v32asld: %s: corrupt object (relocation out of range)\n", obj[i].path);
                 return (2);
             }
 
@@ -611,7 +611,7 @@ static int  partial_link (object_t *obj, int nobj, const char *output)
 
     if (fp == NULL || fwrite (out.p, 1, out.n, fp) != out.n || fclose (fp) != 0)
     {
-        fprintf (stderr, "v32ld: cannot write '%s': %s\n", output, strerror (errno));
+        fprintf (stderr, "v32asld: cannot write '%s': %s\n", output, strerror (errno));
         return (2);
     }
 
@@ -621,7 +621,7 @@ static int  partial_link (object_t *obj, int nobj, const char *output)
 static void  usage (FILE *fp)
 {
     fprintf (fp,
-        "usage: v32ld [OPTION...] OBJECT...\n"
+        "usage: v32asld [OPTION...] OBJECT...\n"
         "Link relocatable objects (made by 'v32as -C') into a VBIN file.\n"
         "\n"
         "  -o, --output=FILE    output file (default: a.vbin)\n"
@@ -722,7 +722,7 @@ int  main (int argc, char **argv)
 
                 if (*optarg == '\0' || *end != '\0' || v > 0x7FFFFFFFul)
                 {
-                    fprintf (stderr, "v32ld: invalid --data '%s' (a number of words)\n", optarg);
+                    fprintf (stderr, "v32asld: invalid --data '%s' (a number of words)\n", optarg);
                     return (2);
                 }
 
@@ -739,7 +739,7 @@ int  main (int argc, char **argv)
                 libs[nlibs++] = optarg;
                 break;
             case 'h':  usage (stdout);            return (0);
-            case 'V':  printf ("v32ld %s\n", VERSION);  return (0);
+            case 'V':  printf ("v32asld %s\n", VERSION);  return (0);
             case 'O':
             {
                 char           *end;
@@ -747,7 +747,7 @@ int  main (int argc, char **argv)
 
                 if (*optarg == '\0' || *end != '\0' || v > 0xFFFFFFFFul)
                 {
-                    fprintf (stderr, "v32ld: invalid --origin '%s'\n", optarg);
+                    fprintf (stderr, "v32asld: invalid --origin '%s'\n", optarg);
                     return (2);
                 }
 
@@ -769,7 +769,7 @@ int  main (int argc, char **argv)
                 else if (optarg != NULL && strcmp (optarg, "v32") == 0)     { dmode = DBG_V32; }
                 else if (optarg != NULL && strcmp (optarg, "program") != 0)
                 {
-                    fprintf (stderr, "v32ld: unrecognized reference mode '%s' for -g "
+                    fprintf (stderr, "v32asld: unrecognized reference mode '%s' for -g "
                                      "(use program, vbin or v32)\n", optarg);
                     return (2);
                 }
@@ -798,32 +798,32 @@ int  main (int argc, char **argv)
 
     if ((bios && cart) || (origin_set && (bios || cart)))
     {
-        fprintf (stderr, "v32ld: --bios, --cart and --origin are mutually exclusive\n");
+        fprintf (stderr, "v32asld: --bios, --cart and --origin are mutually exclusive\n");
         return (2);
     }
 
     if (v32x && !data_set)
     {
-        fprintf (stderr, "v32ld: --v32x needs --data WORDS (the zeroed variable words behind the image)\n");
+        fprintf (stderr, "v32asld: --v32x needs --data WORDS (the zeroed variable words behind the image)\n");
         return (2);
     }
 
     if (!v32x && data_set)
     {
-        fprintf (stderr, "v32ld: --data only makes sense with --v32x\n");
+        fprintf (stderr, "v32asld: --data only makes sense with --v32x\n");
         return (2);
     }
 
     if (v32x && (bios || cart || debug_mode_not_program (debug, dmode)))
     {
-        fprintf (stderr, "v32ld: --v32x cannot be combined with -b, -c or -g vbin/v32 "
+        fprintf (stderr, "v32asld: --v32x cannot be combined with -b, -c or -g vbin/v32 "
                          "(the base is -O ADDR, default 0x%X; addresses in -g are the program's)\n", V32X_WINDOW_BASE);
         return (2);
     }
 
     if (partial && (bios || cart || origin_set || debug || relocs || symbols || entry || v32x))
     {
-        fprintf (stderr, "v32ld: --relocatable only joins objects: it cannot be combined with -b, -c, -O, -g, -r,\n"
+        fprintf (stderr, "v32asld: --relocatable only joins objects: it cannot be combined with -b, -c, -O, -g, -r,\n"
                          "       --symbols, --entry or --v32x (do those when linking the result)\n");
         return (2);
     }
@@ -860,7 +860,7 @@ int  main (int argc, char **argv)
 
             if (path == NULL)
             {
-                fprintf (stderr, "v32ld: cannot find -l%s (looked for %s.v32a and lib%s.a in the -L directories and .)\n",
+                fprintf (stderr, "v32asld: cannot find -l%s (looked for %s.v32a and lib%s.a in the -L directories and .)\n",
                          name, name, name);
                 return (2);
             }
@@ -880,7 +880,7 @@ int  main (int argc, char **argv)
 
             if (get32 (buf + 8) != 1)
             {
-                fprintf (stderr, "v32ld: %s: unsupported archive format version %u\n", path, get32 (buf + 8));
+                fprintf (stderr, "v32asld: %s: unsupported archive format version %u\n", path, get32 (buf + 8));
                 return (2);
             }
 
@@ -892,7 +892,7 @@ int  main (int argc, char **argv)
 
                 if (at + 4 > size || (nl = get32 (buf + at), 0) || at + 4 + ((size_t) nl + 3) / 4 * 4 + 4 > size)
                 {
-                    fprintf (stderr, "v32ld: %s: corrupt archive\n", path);
+                    fprintf (stderr, "v32asld: %s: corrupt archive\n", path);
                     return (2);
                 }
 
@@ -901,7 +901,7 @@ int  main (int argc, char **argv)
 
                 if (at + 8 + nlp + ds > size)
                 {
-                    fprintf (stderr, "v32ld: %s: corrupt archive\n", path);
+                    fprintf (stderr, "v32asld: %s: corrupt archive\n", path);
                     return (2);
                 }
 
@@ -936,7 +936,7 @@ int  main (int argc, char **argv)
 
     if (nobj == 0)
     {
-        fprintf (stderr, "v32ld: no object to link\n");
+        fprintf (stderr, "v32asld: no object to link\n");
         return (2);
     }
 
@@ -1020,7 +1020,7 @@ int  main (int argc, char **argv)
 
         if (!found)
         {
-            fprintf (stderr, "v32ld: error: entry symbol '%s' is not defined by any object\n", entry);
+            fprintf (stderr, "v32asld: error: entry symbol '%s' is not defined by any object\n", entry);
             return (1);
         }
 
@@ -1066,7 +1066,7 @@ int  main (int argc, char **argv)
     {
         if (strcmp (g[k].name, g[k - 1].name) == 0)
         {
-            fprintf (stderr, "v32ld: error: '%s' is defined in both %s and %s\n",
+            fprintf (stderr, "v32asld: error: '%s' is defined in both %s and %s\n",
                      g[k].name, g[k - 1].where, g[k].where);
             errors++;
         }
@@ -1095,7 +1095,7 @@ int  main (int argc, char **argv)
 
                 if (hit == NULL)
                 {
-                    fprintf (stderr, "v32ld: error: entry symbol '%s' is not defined by any object\n", entry);
+                    fprintf (stderr, "v32asld: error: entry symbol '%s' is not defined by any object\n", entry);
                     return (1);
                 }
 
@@ -1105,7 +1105,7 @@ int  main (int argc, char **argv)
 
         if (entry_off >= total)
         {
-            fprintf (stderr, "v32ld: error: the entry point (word %u) is outside the image (%zu words)\n",
+            fprintf (stderr, "v32asld: error: the entry point (word %u) is outside the image (%zu words)\n",
                      entry_off, total);
             return (1);
         }
@@ -1153,7 +1153,7 @@ int  main (int argc, char **argv)
 
             if (r.word >= obj[i].nwords || (r.sym != NO_SYMBOL && r.sym >= obj[i].nsyms))
             {
-                fprintf (stderr, "v32ld: %s: corrupt object (relocation out of range)\n", obj[i].path);
+                fprintf (stderr, "v32asld: %s: corrupt object (relocation out of range)\n", obj[i].path);
                 return (2);
             }
 
@@ -1192,7 +1192,7 @@ int  main (int argc, char **argv)
                         {
                             reported = xrealloc (reported, (nrep + 1) * sizeof (char *));
                             reported[nrep++] = s.name;
-                            fprintf (stderr, "v32ld: error: undefined reference to `%s' (first used in %s)\n",
+                            fprintf (stderr, "v32asld: error: undefined reference to `%s' (first used in %s)\n",
                                      s.name, obj[i].path);
                             errors++;
                         }
@@ -1235,7 +1235,7 @@ int  main (int argc, char **argv)
 
                 if (!used)
                 {
-                    fprintf (stderr, "v32ld: warning: %s: extern '%s' is never used\n",
+                    fprintf (stderr, "v32asld: warning: %s: extern '%s' is never used\n",
                              obj[i].path, s.name);
                 }
             }
@@ -1247,7 +1247,7 @@ int  main (int argc, char **argv)
 
     if (fp == NULL)
     {
-        fprintf (stderr, "v32ld: cannot write '%s': %s\n", output, strerror (errno));
+        fprintf (stderr, "v32asld: cannot write '%s': %s\n", output, strerror (errno));
         return (2);
     }
 
@@ -1284,7 +1284,7 @@ int  main (int argc, char **argv)
 
     if (fclose (fp) != 0)
     {
-        fprintf (stderr, "v32ld: error writing '%s'\n", output);
+        fprintf (stderr, "v32asld: error writing '%s'\n", output);
         return (2);
     }
 
@@ -1294,7 +1294,7 @@ int  main (int argc, char **argv)
 
         if (fp == NULL)
         {
-            fprintf (stderr, "v32ld: cannot write '%s': %s\n", relocs, strerror (errno));
+            fprintf (stderr, "v32asld: cannot write '%s': %s\n", relocs, strerror (errno));
             return (2);
         }
 
@@ -1332,7 +1332,7 @@ int  main (int argc, char **argv)
 
         if (fp == NULL)
         {
-            fprintf (stderr, "v32ld: cannot write '%s': %s\n", symbols, strerror (errno));
+            fprintf (stderr, "v32asld: cannot write '%s': %s\n", symbols, strerror (errno));
             return (2);
         }
 
@@ -1409,7 +1409,7 @@ int  main (int argc, char **argv)
 
         if (fp == NULL)
         {
-            fprintf (stderr, "v32ld: cannot write '%s': %s\n", path, strerror (errno));
+            fprintf (stderr, "v32asld: cannot write '%s': %s\n", path, strerror (errno));
             return (2);
         }
 

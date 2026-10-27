@@ -415,7 +415,7 @@ static size_t  emit_imm (asm_t *a, const loc_t *loc, imm_t imm)
 {
     size_t  index;
 
-    if (imm.kind == IMM_SYM || imm.reloc)
+    if ((imm.kind == IMM_SYM || imm.reloc) && !a -> no_rel)
     {
         if (a -> nrel == a -> relcap)
         {
@@ -747,11 +747,12 @@ void  asm_inst (asm_t *a, const loc_t *loc, unsigned opcode, unsigned r1, unsign
     a -> stmt_fix   = a -> nfix;
 
     // remember where this instruction came from (debug file)
-    if (a -> nrec == a -> reccap)
+    if (!a -> no_rec && a -> nrec == a -> reccap)
     {
         a -> reccap = a -> reccap ? a -> reccap * 2 : 256;
         a -> rec    = xrealloc (a -> rec, a -> reccap * sizeof (dbgrec_t));
     }
+    if (!a -> no_rec)
     {
         const char  *file;
         int          line;
@@ -1197,13 +1198,14 @@ void  asm_end_line (asm_t *a)
 //
 // Parsing entry point: assembles a block of text (a whole file, or one REPL line)
 //
+static int  parse_common_buf (asm_t *a, const char *name, char *buf, size_t n, char *owned,
+                              int first_line, const srcloc_t *map, size_t nmap);
+
 static int  parse_common (asm_t *a, const char *name, const char *text, size_t len,
                           int first_line, const srcloc_t *map, size_t nmap)
 {
-    unsigned  before = a -> errors;
     char     *buf;
     size_t    n = len;
-    void     *scanner;
 
     // skip a UTF-8 byte order mark
     if (n >= 3 && (unsigned char) text[0] == 0xEF && (unsigned char) text[1] == 0xBB
@@ -1216,6 +1218,27 @@ static int  parse_common (asm_t *a, const char *name, const char *text, size_t l
     // the scanner wants the text, a final newline and two terminating NUL bytes
     buf = xrealloc (NULL, n + 4);
     memcpy (buf, text, n);
+    return (parse_common_buf (a, name, buf, n, buf, first_line, map, nmap));
+}
+
+// text the caller gave away (room for len + 4): scanned in place, no copy (on v32nix a copy of a linked program's text does not fit)
+int  asm_parse_map_owned (asm_t *a, const char *name, char *text, size_t len, const srcloc_t *map, size_t nmap)
+{
+    char  *buf = text;
+
+    if (len >= 3 && (unsigned char) buf[0] == 0xEF && (unsigned char) buf[1] == 0xBB && (unsigned char) buf[2] == 0xBF)
+    {
+        memmove (buf, buf + 3, len - 3);
+        len -= 3;
+    }
+    return (parse_common_buf (a, name, buf, len, text, 1, map, nmap));
+}
+
+static int  parse_common_buf (asm_t *a, const char *name, char *buf, size_t n, char *owned,
+                              int first_line, const srcloc_t *map, size_t nmap)
+{
+    unsigned  before = a -> errors;
+    void     *scanner;
 
     if (n == 0 || buf[n - 1] != '\n')
     {
@@ -1238,7 +1261,7 @@ static int  parse_common (asm_t *a, const char *name, const char *text, size_t l
 
     if (scanner == NULL)
     {
-        free (buf);
+        free (owned);
         asm_error (a, NULL, "unable to create the scanner");
         return (1);
     }
@@ -1257,7 +1280,7 @@ static int  parse_common (asm_t *a, const char *name, const char *text, size_t l
     a -> nmap = 0;
 
     v32_lex_free (scanner);
-    free         (buf);
+    free         (owned);
 
     return ((int) (a -> errors - before));
 }

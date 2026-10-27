@@ -3,7 +3,7 @@
 BIN=${1:-../bin/v32asc}
 cd "$(dirname "$0")" || exit 1
 case $BIN in /*) ;; *) BIN=$OLDPWD/$BIN ;; esac
-LD=${2:-$(dirname "$BIN")/v32ld}
+LD=${2:-$(dirname "$BIN")/v32asld}
 case $LD in /*) ;; *) LD=$OLDPWD/$LD ;; esac
 T=${TMPDIR:-/tmp}/v32asc_test.$$; mkdir -p "$T"; trap 'rm -rf "$T"' EXIT
 pass=0; fail=0
@@ -171,12 +171,12 @@ grep -q '^'"$T"'/dd.vbin:' "$T/dd.d" && grep -q 'inc.inc' "$T/dd.d" && grep -q '
   && ok || bad "-MD / -MP"
 ( cd "$T/src" && "$BIN" -w -MD -MF "$T/o.d" -MT cart.vbin -I "$T/dat" -o "$T/dd.vbin" dd.asm ) 2>/dev/null
 head -1 "$T/o.d" | grep -q '^cart.vbin:' && ok || bad "-MF / -MT"
-# VA-5: archives, --entry, --symbols and the undefined-reference message in v32ld
+# VA-5: archives, --entry, --symbols and the undefined-reference message in v32asld
 printf 'global _main\nextern _lib\n_main:\n  call _lib\n  hlt\n' > "$T/am.asm"
 printf 'global _lib\n_lib:\n  ret\n' > "$T/al.asm"
 printf 'global _unused\n_unused:\n  hlt\n' > "$T/au.asm"
 for n in am al au; do "$BIN" -C -o "$T/$n.v32ob" "$T/$n.asm" 2>/dev/null; done
-"$LD" -A "$T/libx.a" "$T/al.v32ob" "$T/au.v32ob" && ok || bad "v32ld -A"
+"$LD" -A "$T/libx.a" "$T/al.v32ob" "$T/au.v32ob" && ok || bad "v32asld -A"
 "$LD" -o "$T/ar1.vbin" "$T/am.v32ob" "$T/libx.a" --symbols "$T/ar1.sym" 2>/dev/null \
   && grep -q '_lib,F' "$T/ar1.sym" && ! grep -q '_unused' "$T/ar1.sym" && ok || bad "archive member pulled only when needed"
 "$LD" -o "$T/ar2.vbin" "$T/am.v32ob" -L "$T" -l x 2>/dev/null && cmp -s "$T/ar1.vbin" "$T/ar2.vbin" && ok || bad "-L / -l"
@@ -196,7 +196,7 @@ for pert in 0 165 90; do
   ( cd reloc && MALLOC_PERTURB_=$pert "$BIN" -w -o "$T/k.vbin" -r "$T/k.rel" kind_D.asm ) 2>/dev/null
   cmp -s "$T/k.rel" reloc/kind_D.rel && ok || bad "reloc kinds with MALLOC_PERTURB_=$pert"
 done
-# VA-2/3/4/5: datasym and --map through objects, partial links (v32ld -R), --map in diagnostics
+# VA-2/3/4/5: datasym and --map through objects, partial links (v32asld -R), --map in diagnostics
 ( cd link2
   "$BIN" -C -o "$T/d1.v32ob" d1.asm && "$BIN" -C -o "$T/d2.v32ob" d2.asm \
     && "$LD" -o "$T/ds.vbin" -r "$T/ds.rel" "$T/d1.v32ob" "$T/d2.v32ob" 2>/dev/null \
@@ -206,7 +206,7 @@ done
     && cmp -s "$T/dp.vbin" "$T/ds.vbin" && cmp -s "$T/dp.rel" ds.rel && echo ok || echo "FAIL: partial link of datasym objects"
   "$BIN" -C --map c.map -o "$T/c1.v32ob" c1.asm && "$BIN" -C --map c.map -o "$T/c2.v32ob" c2.asm \
     && "$LD" -g -o "$T/cm.vbin" "$T/c1.v32ob" "$T/c2.v32ob" 2>/dev/null \
-    && cmp -s "$T/cm.vbin.debug" cmap.debug && echo ok || echo "FAIL: -C --map then v32ld -g"
+    && cmp -s "$T/cm.vbin.debug" cmap.debug && echo ok || echo "FAIL: -C --map then v32asld -g"
   "$BIN" -g --map one.map -o "$T/one.vbin" one.asm 2>/dev/null \
     && cmp -s "$T/one.vbin.debug" cmap.debug && echo ok || echo "FAIL: -g --map on the joined source"
   "$LD" -R -o "$T/cp.v32ob" "$T/c1.v32ob" "$T/c2.v32ob" 2>/dev/null \

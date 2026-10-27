@@ -6,7 +6,7 @@ lexer  is flex,  the parser  is bison,  and symbols/fixups  live in  hash
 tables instead of bash arrays and `bc`.
 
 ```
-    make          # builds bin/v32as and bin/v32ld  (needs flex, bison, cc; readline optional)
+    make          # builds bin/v32as and bin/v32asld  (needs flex, bison, cc; readline optional)
     make test     # differential/golden tests (including .debug files) (sh + od + cmp only)
     make install  # copies to ~/bin
     make archive  # ../v32as-project.zip, without build products
@@ -23,14 +23,14 @@ design notes, `tests/`, `experiments/`; `make` puts generated files in `build/` 
 - **`--symbols FILE` (VA-2)**: `address,name,kind` per label, sorted by address; kind `F` (code follows), `D` (data
   follows, or nothing). `--symbols-all` adds file-local labels as `function.local` and every `%define global_NAME number`
   as kind `V`, and every `DATASYM+N` the program refers to (see `datasym`) as `N,DATASYM+N,V`: the offset in the
-  address column. Not available with `-C` (use `v32ld --symbols`).
+  address column. Not available with `-C` (use `v32asld --symbols`).
 - **`-D` against `%define` (VA-3)**: a `%define` of a `-D` name warns (the file still wins); `-D!NAME=VALUE` or
   `--force-define NAME=VALUE` makes the command line win. A `%define` that changes a macro's value warns
   (`-Wredefine`, on by default; `-Wno-redefine`, `-w` and `--standard` silence it).
 - **`--map` (VA-4)**: file names are compared exactly first, then by base name (the longest shared directory tail wins),
   so `main.asm` in the map matches `out/kernel/main.asm`. If no instruction matches at all, a warning names the
   names found in the map.
-- **v32ld (VA-5)**: `--symbols FILE`; `-A FILE` makes an archive (`V32-VARC`) of objects; archives given as operands or
+- **v32asld (VA-5)**: `--symbols FILE`; `-A FILE` makes an archive (`V32-VARC`) of objects; archives given as operands or
   with `-L DIR -l NAME` (libNAME.a) are mined after the objects, a member being linked only when it defines a symbol still
   undefined; `--entry SYMBOL` puts a two-word `jmp SYMBOL` first unless the symbol is already the first word;
   `--v32x --data N [--entry SYMBOL|OFFSET]` writes a V32X executable (header + image linked at 0x100000).
@@ -44,12 +44,12 @@ design notes, `tests/`, `experiments/`; `make` puts generated files in `build/` 
   as datasyms and `-r` listed code relocations as `,D` (the V32DOS `byteaddr` module: `call __function_main`).
   `tests/reloc/` runs the reduced repro with the heap poisoned (`MALLOC_PERTURB_`).
 - **`datasym` in objects (VA-1)**: `v32as -C` accepts `datasym`, the object records it (format version 2) and
-  `v32ld -r FILE` (also `--emit-relocs FILE`) writes the third column, `,C` or `,D`, as `v32as -r` does. A datasym
+  `v32asld -r FILE` (also `--emit-relocs FILE`) writes the third column, `,C` or `,D`, as `v32as -r` does. A datasym
   has the value 0 in every object and is not moved by the link.
 - **`-C` with `--map` (VA-2)**: the object stores the C file and line (and the function) of each instruction in place
-  of the assembly ones; instructions the map does not know are left out, as in `-g --map`. `v32ld -g` then writes
+  of the assembly ones; instructions the map does not know are left out, as in `-g --map`. `v32asld -g` then writes
   the C-level `.debug` file, the same as `v32as -g --map` would on the joined source. (Object format version 2.)
-- **Partial link (VA-3)**: `v32ld -R -o ab.v32ob a.v32ob b.v32ob` (not `-r`, which is the relocation list) joins
+- **Partial link (VA-3)**: `v32asld -R -o ab.v32ob a.v32ob b.v32ob` (not `-r`, which is the relocation list) joins
   objects into one object. Globals stay global, an `extern` another input defines becomes a reference to it, the
   others stay `extern`; relocations, datasyms and debug records are kept, so linking `ab.v32ob` equals linking
   `a.v32ob b.v32ob`. Archives and `-l` work as in a full link. It refuses `-b -c -O -g -r --symbols --entry --v32x`.
@@ -71,15 +71,22 @@ a VBIN for a cartridge. (Reading STDIN, the output goes to STDOUT.)
 
 - `-o FILE` names the output. `-b/--bios` assembles for the BIOS (0x10000000); `-c/--cart` for a
   cartridge (0x20000000, the default); `-O/--origin ADDR` for any base address.
+- `--v32x` (with `--origin`) writes a v32nix executable instead of a VBIN: an 8-word header (`V32X`, version 1, header words, program
+  words, data words, entry 0, origin, flags 0), then the program. The data words (zeroed by v32nix's `exec` after the program) come from
+  `--v32x-data N`, or from the source's `%define __V32X_DATAWORDS N` (what `v32cc --data-after-text` writes). On the console a file
+  word is a machine word, as v32nix's `exec` reads it.
+- Memory (2026-10-27, so that v32as runs on v32nix): a named file goes through the preprocessor a line at a time, the preprocessor's
+  output is scanned in place, each file-local label is remembered once, and the debug records and the address list are kept only for
+  `-g`, `-r`, `-C` and `--symbols-all`. The output is the same.
 - `-T/--text` prints a human-readable listing (the instruction encodings) instead of writing a VBIN.
   Its addresses start at 0 unless `-b/-c/-O` is given. `-n/--none` is `-T` with no base address.
   (`-B/--binary` still exists, and only says what is already the default.)
 - `-w/--no-warnings` inhibits all warnings.
 - `-g/--debug[=MODE]` also writes `FILE.debug` (CSV `address,file,line[,label]`, one line per instruction) next to the output file. Plain `-g` is byte-identical to the official assembler's `-g program` (absolute word addresses, e.g. `0x20000000`). `-g vbin` / `-g v32` give real byte offsets in the .vbin (0x0C header) or .v32 (0x8C header) file; the official tool's versions of those two print wrapped-around values. A source file literally named `program`, `vbin` or `v32` must be written `./program`.
 - `--map FILE`: FILE is the compiler's debug file (`asmfile,asmline,cfile,cline[,function]`, as `v32cc -g` writes it). The `.debug` file then has the same layout, but each instruction names the C file and line (and the function as the label column), which is what v32sim's C overlay reads. Instructions whose assembly line is not in FILE are left out. `--map` also works with `-C` and for diagnostics, see Round-10.
-- `-r/--relocs FILE` writes `index,0xVALUE` for every word that holds an address resolved from a label (code or data, `label+N` included) or computed from the instruction's own address (`MOV Rn, IP`, the `IR`/`IV` patch addresses). Plain numbers that happen to look like addresses are never listed, so a loader can relocate a module by adding the base difference to those words. A source that declares `datasym NAME` (enhanced syntax; the value of `NAME` is 0, so `NAME+17` is a word holding 17) gets a third column, `,C` for a code address (moves with the load address) and `,D` for a reference to a datasym (moves with the base of the module's data). `v32cc --pic-data` writes every global's address that way. A datasym can be used with `-C` too; `v32ld -r` then writes the same column.
+- `-r/--relocs FILE` writes `index,0xVALUE` for every word that holds an address resolved from a label (code or data, `label+N` included) or computed from the instruction's own address (`MOV Rn, IP`, the `IR`/`IV` patch addresses). Plain numbers that happen to look like addresses are never listed, so a loader can relocate a module by adding the base difference to those words. A source that declares `datasym NAME` (enhanced syntax; the value of `NAME` is 0, so `NAME+17` is a word holding 17) gets a third column, `,C` for a code address (moves with the load address) and `,D` for a reference to a datasym (moves with the base of the module's data). `v32cc --pic-data` writes every global's address that way. A datasym can be used with `-C` too; `v32asld -r` then writes the same column.
 
-  **Format of the `-r` file** (a loader may depend on it): one line per word, sorted by `index` (ascending, no duplicates); `index` is the **zero-based word index into the image**, not a byte offset and not counting the 3-word VBIN header (the first instruction is word 0); `0xVALUE` is the value **as assembled**, i.e. at the base the image was assembled or linked for, so a loader that places the image at `new_base` adds `new_base - assembled_base` to a `C` word (and, for a `D` word, the displacement of the data) and leaves other words alone; the optional third column is `C` or `D` and is present on every line if the source (or any linked object) declares a `datasym`, on none otherwise. Both `v32as -r` and `v32ld -r` write exactly this.
+  **Format of the `-r` file** (a loader may depend on it): one line per word, sorted by `index` (ascending, no duplicates); `index` is the **zero-based word index into the image**, not a byte offset and not counting the 3-word VBIN header (the first instruction is word 0); `0xVALUE` is the value **as assembled**, i.e. at the base the image was assembled or linked for, so a loader that places the image at `new_base` adds `new_base - assembled_base` to a `C` word (and, for a `D` word, the displacement of the data) and leaves other words alone; the optional third column is `C` or `D` and is present on every line if the source (or any linked object) declares a `datasym`, on none otherwise. Both `v32as -r` and `v32asld -r` write exactly this.
 - `-s/--step` pauses per statement, `-v/--verbose` shows the encoded bit fields
 - no files and a terminal on stdin starts the REPL: `.help .labels .dump .reset .quit`
 - `-` reads stdin; the legacy bare words (`bios`, `cart`, ...) still work
@@ -87,9 +94,9 @@ a VBIN for a cartridge. (Reading STDIN, the output goes to STDOUT.)
 
 ### Objects and the linker
 
-`v32as -C x.asm` writes a relocatable object `x.v32ob`; `v32ld a.v32ob b.v32ob -o prog.vbin [-b|-c|-O ADDR] [-g] [-r FILE]`
+`v32as -C x.asm` writes a relocatable object `x.v32ob`; `v32asld a.v32ob b.v32ob -o prog.vbin [-b|-c|-O ADDR] [-g] [-r FILE]`
 links them. `global _name` / `extern _name` (plain names, no `%`) say which labels are shared. Linking
-equals assembling the sources as one file; the objects carry the debug records, so `v32ld -g` writes the
+equals assembling the sources as one file; the objects carry the debug records, so `v32asld -g` writes the
 same `.debug` file. Format and details: `docs/OBJECT.md`.
 
 ### Label plus constant

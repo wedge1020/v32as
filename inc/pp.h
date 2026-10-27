@@ -43,6 +43,7 @@ void         pp_undefine    (pp_t *p, const char *name);
 // Preprocess a whole file's text. Output accumulates until pp_output_clear().
 // Returns the number of errors found in this call.
 unsigned     pp_process     (pp_t *p, const char *name, const char *text, size_t len);
+unsigned     pp_process_file (pp_t *p, const char *name, FILE *fp);     // the same, read a line at a time
 
 // Line-at-a-time use (interactive mode): one stream stays open, so %ifdef blocks and
 // definitions persist from line to line.
@@ -54,6 +55,7 @@ int          pp_pending      (const pp_t *p);       // inside %macro / %rep / %i
 const char     *pp_output   (const pp_t *p, size_t *len);
 const srcloc_t *pp_linemap  (const pp_t *p, size_t *nlines);
 void            pp_output_clear (pp_t *p);
+char           *pp_output_take  (pp_t *p, size_t *len);   // the output buffer, now the caller's (malloc'd, room for len + 4)
 unsigned        pp_errors   (const pp_t *p);
 
 // Write the preprocessed text (as -E does). With markers, a cpp-style '# N "file"'

@@ -13,7 +13,7 @@
 
 #include "pp.h"
 
-#define  VERSION            "20261025-dev"
+#define  VERSION            "20261027-dev"
 
 #define  BIOS_BASE          0x10000000u
 #define  CART_BASE          0x20000000u
@@ -239,6 +239,8 @@ typedef struct asm_ctx
     size_t       pendcap;
 
     int          object;            // -C: write a relocatable object (v32ob), base 0
+    int          no_rel;            // do not record the address words (rel): no -r, -C or --symbols-all wants them (memory on v32nix)
+    int          no_rec;            // do not record instruction lines (rec): no -g or -C wants them
     int          standard;          // strict official-assembler language (--standard)
     int          no_warn;           // -w
 }
@@ -267,6 +269,7 @@ void    asm_resolve         (const asm_t *a, int line, const char **file, int *s
                              int *expanded);
 int     asm_finish          (asm_t *a);
 int     asm_write_vbin      (asm_t *a, FILE *fp);
+int     asm_parse_map_owned (asm_t *a, const char *name, char *text, size_t len, const srcloc_t *map, size_t nmap);  // takes text (room for len + 4)
 int     asm_write_debug     (asm_t *a, FILE *fp, dbgmode_t mode);
 int     asm_write_object    (asm_t *a, FILE *fp);
 void    asm_sym_declare     (asm_t *a, const loc_t *loc, sym_t *s, int external);

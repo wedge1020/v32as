@@ -44,6 +44,9 @@ typedef struct
     int          text;              // -T: print a listing instead of writing a VBIN
     int          none;              // -n: no base address (implies --text)
     int          binary_explicit;   // -B was given
+    int          v32x;              // --v32x: a v32nix executable (8-word header, then the words), needs --origin
+    long         v32x_data;         // --v32x-data=N: zeroed data words after the image (else %define __V32X_DATAWORDS, else 0)
+    int          v32x_data_set;
     int          standard;          // --standard: strict official-assembler behaviour
     int          no_warn;           // -w
     int          preprocess;        // -E: stop after preprocessing
@@ -86,10 +89,13 @@ static void  usage (FILE *fp)
         "  -b, --bios           assemble for BIOS (addresses start at 0x10000000)\n"
         "  -c, --cart           assemble for CART (0x20000000; this is the default)\n"
         "  -O, --origin ADDR    assemble for an arbitrary base address (e.g. code that will run from RAM)\n"
+        "      --v32x           write a v32nix executable (V32X: an 8-word header, then the program) instead of a\n"
+        "                       VBIN; needs --origin.  The data words that follow the program come from\n"
+        "      --v32x-data=N    or, without it, from the source's %%define __V32X_DATAWORDS (v32cc --data-after-text)\n"
         "  -g, --debug[=MODE]   also write FILE.debug (CSV: address,file,line[,label]) next to the\n"
         "                       output file; MODE is program (default), vbin or v32, as in the\n"
         "                       official assembler's \"-g MODE\"\n"
-        "  -C, --object         write a relocatable object (FILE.v32ob) for the linker v32ld; labels\n"
+        "  -C, --object         write a relocatable object (FILE.v32ob) for the linker v32asld; labels\n"
         "                       are relative to the object, 'global'/'extern' name the symbols shared\n"
         "                       with other objects, debug info is stored in the object\n"
         "  -r, --relocs=FILE    write the list of words that hold an address (label references,\n"
@@ -135,6 +141,64 @@ static void  usage (FILE *fp)
 
 ////////////////////////////////////////////////////////////////////////////////////////
 //
+// --v32x: the v32nix executable (v32nix inc/exec.h): magic "V32X" (0x58323356), version 1, header words 8, text words,
+// data words, entry offset 0, origin, flags 0; then the program's words.  Written as 32-bit little-endian words on a
+// host; on the console, where a char is a word, one file word per machine word, which is what v32nix's exec reads.
+//
+typedef struct { int found; long value; } v32x_find_t;
+
+static void  v32x_find_data (void *ud, const char *name, const char *body)
+{
+    v32x_find_t *f = ud;
+
+    if (strcmp (name, "__V32X_DATAWORDS") == 0 && body != NULL)
+    {
+        f -> found = 1;
+        f -> value = strtol (body, NULL, 0);
+    }
+}
+
+static int  put_word (FILE *fp, uint32_t w)
+{
+#ifdef __V32CC__
+    fputc ((int) w, fp);                        // (a word of all ones is EOF's value: only ferror tells a failure)
+    return (ferror (fp) ? -1 : 0);
+#else
+    unsigned char  b[4];
+
+    b[0] = (unsigned char) (w & 0xFF);          b[1] = (unsigned char) ((w >> 8) & 0xFF);
+    b[2] = (unsigned char) ((w >> 16) & 0xFF);  b[3] = (unsigned char) ((w >> 24) & 0xFF);
+    return (fwrite (b, 1, 4, fp) == 4 ? 0 : -1);
+#endif
+}
+
+static int  write_v32x (asm_t *a, FILE *fp, uint32_t origin, long data)
+{
+    uint32_t  hdr[8] = { 0x58323356u, 1, 8, 0, 0, 0, 0, 0 };
+    size_t    i;
+
+    hdr[3] = (uint32_t) a -> nwords;
+    hdr[4] = (uint32_t) data;
+    hdr[6] = origin;
+    for (i = 0; i < 8; i++)
+    {
+        if (put_word (fp, hdr[i]) != 0)
+        {
+            return (-1);
+        }
+    }
+    for (i = 0; i < a -> nwords; i++)
+    {
+        if (put_word (fp, a -> words[i]) != 0)
+        {
+            return (-1);
+        }
+    }
+    return (0);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
 // FILE.ext -> FILE.vbin, as the official assembler names its output
 //
 static char  *vbin_name (const char *input, const char *ext)
@@ -162,7 +226,16 @@ static char  *read_stream (FILE *fp, size_t *len)
 {
     size_t  cap = 1 << 16;
     size_t  n   = 0;
-    char   *buf = malloc (cap);
+    char   *buf;
+    long    size;
+
+    // a file whose size is known is read into one block of that size: doubling a buffer needs the old and the new one at once,
+    // which on v32nix (a character is a word, a process has at most ~300 K words) does not fit for a linked program's assembly
+    if (fp != stdin && fseek (fp, 0, SEEK_END) == 0 && (size = ftell (fp)) >= 0 && fseek (fp, 0, SEEK_SET) == 0)
+    {
+        cap = (size_t) size + 1;
+    }
+    buf = malloc (cap);
 
     if (buf == NULL)
     {
@@ -403,18 +476,19 @@ static int  repl (asm_t *a, pp_t *pp)
 // Run one source text through the preprocessor and then (unless -E) the assembler.
 // Returns 0, or 1 if the preprocessor found errors (nothing is assembled then).
 //
+// takes text: it is freed as soon as the preprocessor is done with it, and the preprocessor's output is assembled in place, so at
+// most one copy of the program's text is alive at a time (v32nix: a linked hello world is 75 K characters, a character a word)
 static int  process_source (asm_t *a, pp_t *pp, const options_t *opt, FILE *out,
-                            const char *name, const char *text, size_t len)
+                            const char *name, char *text, size_t len)
 {
     size_t           olen;
     size_t           nmap;
-    const char      *otext;
     const srcloc_t  *map;
     int              failed = (pp_process (pp, name, text, len) != 0);
 
+    free (text);
     if (!failed)
     {
-        otext = pp_output (pp, &olen);
         map   = pp_linemap (pp, &nmap);
 
         if (opt -> preprocess)
@@ -423,7 +497,38 @@ static int  process_source (asm_t *a, pp_t *pp, const options_t *opt, FILE *out,
         }
         else
         {
-            asm_parse_map (a, name, otext, olen, map, nmap);
+            char  *otext = pp_output_take (pp, &olen);
+
+            asm_parse_map_owned (a, name, otext, olen, map, nmap);
+        }
+    }
+
+    pp_output_clear (pp);
+
+    return (failed);
+}
+
+// a file, read by the preprocessor a line at a time; otherwise as process_source
+static int  process_file (asm_t *a, pp_t *pp, const options_t *opt, FILE *out, const char *name, FILE *fp)
+{
+    size_t           olen;
+    size_t           nmap;
+    const srcloc_t  *map;
+    int              failed = (pp_process_file (pp, name, fp) != 0) || ferror (fp);
+
+    if (!failed)
+    {
+        map = pp_linemap (pp, &nmap);
+
+        if (opt -> preprocess)
+        {
+            pp_write_expanded (pp, out, !opt -> no_markers);
+        }
+        else
+        {
+            char  *otext = pp_output_take (pp, &olen);
+
+            asm_parse_map_owned (a, name, otext, olen, map, nmap);
         }
     }
 
@@ -619,6 +724,8 @@ int  main (int  argc, char **argv)
         { "symbols",  required_argument, 0, 1003 },
         { "symbols-all", no_argument,    0, 1004 },
         { "force-define", required_argument, 0, 1005 },
+        { "v32x",     no_argument,       0, 1006 },
+        { "v32x-data", required_argument, 0, 1007 },
         { "binary",   no_argument,       0, 'B' },
         { "debug",    optional_argument, 0, 'g' },
         { "origin",   required_argument, 0, 'O' },
@@ -703,6 +810,8 @@ int  main (int  argc, char **argv)
             case 1002: opt.map     = optarg;  break;
             case 1003: opt.symbols = optarg;  break;
             case 1004: opt.symbols_all = 1;   break;
+            case 1006: opt.v32x = 1;          break;
+            case 1007: opt.v32x_data = strtol (optarg, NULL, 0);  opt.v32x_data_set = 1;  break;
             case 1005:
             {
                 char  *spec = malloc (strlen (optarg) + 2);
@@ -849,6 +958,12 @@ int  main (int  argc, char **argv)
         opt.cart  |= (makes_vbin && !opt.object && !opt.bios && !opt.origin_set && !opt.cart);
     }
 
+    if (opt.v32x && (!opt.origin_set || opt.object || !opt.binary))
+    {
+        fprintf (stderr, "v32as: --v32x needs --origin ADDR and binary output (not --object, --text or -E)\n");
+        return (2);
+    }
+
     if (opt.origin_set && (opt.bios || opt.cart))
     {
         fprintf (stderr, "v32as: --origin cannot be combined with --bios or --cart\n");
@@ -889,7 +1004,7 @@ int  main (int  argc, char **argv)
 
     if (opt.symbols && (opt.object || opt.preprocess || will_repl))
     {
-        fprintf (stderr, "v32as: --symbols needs assembled input (use 'v32ld --symbols' for objects)\n");
+        fprintf (stderr, "v32as: --symbols needs assembled input (use 'v32asld --symbols' for objects)\n");
         return (2);
     }
 
@@ -974,6 +1089,9 @@ int  main (int  argc, char **argv)
     a.incdirs  = incdirs;
     a.nincdirs = nincdirs;
     a.listing  = !opt.binary;
+    // what only some outputs need is not kept (a linked program's assembly on v32nix, a character a word, needs every word)
+    a.no_rel   = opt.binary && !opt.relocs && !opt.object && !opt.symbols_all;
+    a.no_rec   = opt.binary && !opt.debug && !opt.object;
 
     // text output goes out as the assembly proceeds; binary output only after success
     if (opt.output != NULL && !opt.binary)
@@ -1027,8 +1145,6 @@ int  main (int  argc, char **argv)
                 rc = 1;
                 pp_failed = 1;
             }
-
-            free (text);
         }
     }
     else
@@ -1052,6 +1168,20 @@ int  main (int  argc, char **argv)
                 continue;
             }
 
+            if (fp != stdin)
+            {
+                // a named file goes through the preprocessor a line at a time (it is never all in memory)
+                int  failed = process_file (&a, pp, &opt, out, files[i], fp);
+
+                fclose (fp);
+                if (failed)
+                {
+                    rc = 1;
+                    pp_failed = 1;
+                }
+                continue;
+            }
+
             text = read_stream (fp, &len);
 
             if (fp != stdin)
@@ -1071,8 +1201,6 @@ int  main (int  argc, char **argv)
                 rc = 1;
                 pp_failed = 1;
             }
-
-            free (text);
         }
     }
 
@@ -1130,7 +1258,17 @@ int  main (int  argc, char **argv)
             rc = 2;
         }
 
-        if (rc == 0 && (opt.object ? asm_write_object (&a, out) : asm_write_vbin (&a, out)) != 0)
+        if (rc == 0 && opt.v32x && !opt.v32x_data_set)
+        {
+            v32x_find_t  f = { 0, 0 };
+
+            pp_each_define (pp, v32x_find_data, &f);
+            opt.v32x_data = f.found ? f.value : 0;
+        }
+
+        if (rc == 0 && (opt.object ? asm_write_object (&a, out)
+                                   : opt.v32x ? write_v32x (&a, out, opt.origin, opt.v32x_data)
+                                              : asm_write_vbin (&a, out)) != 0)
         {
             fprintf (stderr, "v32as: error writing the output\n");
             rc = 2;

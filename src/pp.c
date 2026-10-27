@@ -318,6 +318,8 @@ struct pp
     size_t     nlocals;
     size_t     caplocals;
     int        locals_sorted;
+    size_t    *lhash;               // open addressing over locals[] by mangled name, + 1 (0 = empty): each label is kept once
+    size_t     lhcap;
 
     // files read by %include (for -MD)
     char     **deps;
@@ -639,6 +641,7 @@ void  pp_free (pp_t *p)
     }
 
     free (p -> locals);
+    free (p -> lhash);
     free (p -> deps);
     free (p -> incdirs);
     free (p -> once);
@@ -778,6 +781,27 @@ const srcloc_t  *pp_linemap (const pp_t *p, size_t *nlines)
 {
     *nlines = p -> nmap;
     return (p -> map);
+}
+
+// The output text, handed over: the caller frees it.  It is trimmed to its length plus 4 (the scanner's final newline and NULs),
+// so the doubling slack does not stay allocated while the text is assembled (on v32nix a character is a word).
+char  *pp_output_take (pp_t *p, size_t *len)
+{
+    char  *s = p -> out.s;
+
+    *len = p -> out.len;
+    if (s == NULL)
+    {
+        s = xrealloc (NULL, 4);
+        s[0] = 0;
+    }
+    else
+    {
+        s = xrealloc (s, p -> out.len + 4);
+    }
+    p -> out.s   = NULL;
+    p -> out.len = p -> out.cap = 0;
+    return (s);
 }
 
 void  pp_output_clear (pp_t *p)
@@ -1942,28 +1966,82 @@ static int  expand_buffer (pp_t *p, buf_t *b, hides_t *hides, int depth, int *ch
 // A global label is any "_name:". The expansion is an ordinary label, so everything
 // downstream (symbol table, debug file) sees plain names.
 //
+static unsigned  hash_str (const char *s, size_t n)
+{
+    unsigned  h = 5381;
+
+    while (n--)
+    {
+        h = h * 33 + (unsigned char) *s++;
+    }
+
+    return (h);
+}
+
+// is mangled (n characters) noted already?  Otherwise, where in lhash it goes (the table has room)
+static size_t  local_slot (pp_t *p, const char *mangled, size_t n, int *found)
+{
+    size_t  i = hash_str (mangled, n) % p -> lhcap;
+
+    *found = 0;
+    while (p -> lhash[i] != 0)
+    {
+        const char  *m = p -> locals[p -> lhash[i] - 1].mangled;
+
+        if (strncmp (m, mangled, n) == 0 && m[n] == 0)
+        {
+            *found = 1;
+            break;
+        }
+        i = (i + 1) % p -> lhcap;
+    }
+    return (i);
+}
+
 static void  local_note (pp_t *p, const char *name, size_t n)
 {
     size_t  g = strlen (p -> last_global);
-    char   *mangled = xrealloc (NULL, g + 2 + n + 1);
-    char   *display = xrealloc (NULL, g + 1 + n + 1);
+    char   *mangled;
+    char   *display;
+    size_t  slot;
+    int     found;
 
+    // the same label is written many times (its definition, every jump to it): keep one copy of each (v32cc's assembly has
+    // ~2.4 references per local label; on v32nix every copy was ~70 words of a process that has ~300 K)
+    if (p -> nlocals + 1 > p -> lhcap / 2 || p -> locals_sorted)
+    {
+        // (re)build the table: it is full, or pp_local_name sorted locals[] and the indexes moved
+        size_t  k, cap = p -> lhcap ? (p -> nlocals + 1 > p -> lhcap / 2 ? p -> lhcap * 2 : p -> lhcap) : 256;
+
+        p -> locals_sorted = 0;
+        free (p -> lhash);
+        p -> lhash = xrealloc (NULL, cap * sizeof (size_t));
+        memset (p -> lhash, 0, cap * sizeof (size_t));
+        p -> lhcap = cap;
+        for (k = 0; k < p -> nlocals; k++)
+        {
+            p -> lhash[local_slot (p, p -> locals[k].mangled, strlen (p -> locals[k].mangled), &found)] = k + 1;
+        }
+    }
+
+    mangled = xrealloc (NULL, g + 2 + n + 1);
     memcpy (mangled, p -> last_global, g);
     memcpy (mangled + g, "__", 2);
     memcpy (mangled + g + 2, name, n);
     mangled[g + 2 + n] = 0;
+
+    slot = local_slot (p, mangled, g + 2 + n, &found);
+    if (found)
+    {
+        free (mangled);
+        return;
+    }
+
+    display = xrealloc (NULL, g + 1 + n + 1);
     memcpy (display, p -> last_global, g);
     display[g] = '.';
     memcpy (display + g + 1, name, n);
     display[g + 1 + n] = 0;
-
-    // the same label is usually written many times; keep one copy
-    if (p -> nlocals > 0 && strcmp (p -> locals[p -> nlocals - 1].mangled, mangled) == 0)
-    {
-        free (mangled);
-        free (display);
-        return;
-    }
 
     if (p -> nlocals == p -> caplocals)
     {
@@ -1974,7 +2052,7 @@ static void  local_note (pp_t *p, const char *name, size_t n)
     p -> locals[p -> nlocals].mangled = mangled;
     p -> locals[p -> nlocals].display = display;
     p -> nlocals++;
-    p -> locals_sorted = 0;
+    p -> lhash[slot] = p -> nlocals;
 }
 
 static int  localize (pp_t *p, const buf_t *in, buf_t *out)
@@ -5304,6 +5382,8 @@ static void  process_line (pp_t *p, const char *s, size_t n)
     }
 }
 
+static unsigned  process_end (pp_t *p, frame_t *f, unsigned before);
+
 static unsigned  process_text (pp_t *p, const char *name, const char *text, size_t len)
 {
     frame_t   *f      = frame_push (p, name);
@@ -5342,6 +5422,14 @@ static unsigned  process_text (pp_t *p, const char *name, const char *text, size
 
         pos = (end < len) ? end + 1 : end;
     }
+
+    return (process_end (p, f, before));
+}
+
+// the end of a file (text or stream): what was left open is an error
+static unsigned  process_end (pp_t *p, frame_t *f, unsigned before)
+{
+    int  k;
 
     // a body that was still being captured when this file ended
     if (p -> cap.kind != CTX_NONE && p -> cap.nframes == p -> nframes)
@@ -5384,9 +5472,65 @@ static unsigned  process_text (pp_t *p, const char *name, const char *text, size
     return (p -> errors - before);
 }
 
+// A file read a line at a time (pp_process_file): the text is never all in memory at once next to the output (v32nix: a
+// character is a word, a linked program's assembly is ~75 K of them, and the output is as long again)
+static unsigned  process_stream (pp_t *p, const char *name, FILE *fp)
+{
+    frame_t   *f      = frame_push (p, name);
+    unsigned   before = p -> errors;
+    buf_t      line   = { 0 };
+    int        c, first = 1;
+
+    f -> canon = realpath (name, NULL);
+
+    for (;;)
+    {
+        line.len = 0;
+        while ((c = getc (fp)) != EOF && c != '\n')
+        {
+            char  ch = (char) c;
+
+            buf_put (&line, &ch, 1);
+        }
+        if (c == EOF && line.len == 0)
+        {
+            break;
+        }
+        if (line.len > 0 && line.s[line.len - 1] == '\r')
+        {
+            line.len--;
+        }
+        {
+            const char  *s = line.s ? line.s : "";
+            size_t       n = line.len;
+
+            if (first && n >= 3 && (unsigned char) s[0] == 0xEF && (unsigned char) s[1] == 0xBB && (unsigned char) s[2] == 0xBF)
+            {
+                s += 3;
+                n -= 3;
+            }
+            first = 0;
+            f -> line++;
+            process_line (p, s, n);
+        }
+        if (c == EOF)
+        {
+            break;
+        }
+    }
+    free (line.s);
+
+    return (process_end (p, f, before));
+}
+
 unsigned  pp_process (pp_t *p, const char *name, const char *text, size_t len)
 {
     return (process_text (p, name, text, len));
+}
+
+unsigned  pp_process_file (pp_t *p, const char *name, FILE *fp)
+{
+    return (process_stream (p, name, fp));
 }
 
 void  pp_stream_begin (pp_t *p, const char *name)
