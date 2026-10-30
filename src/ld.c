@@ -19,7 +19,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define  VERSION      "20261025-dev"
+#define  VERSION      "20261030-dev"
 #define  BIOS_BASE    0x10000000u
 #define  CART_BASE    0x20000000u
 
@@ -62,7 +62,8 @@ typedef struct
     unsigned char  *raw;
     uint32_t        version, dbgsz;     // dbgsz: bytes per debug record (12; 16 in version 2: + function name)
     uint32_t        nwords, nsyms, nrels, ndbg, strsize;
-    const unsigned char  *words, *syms, *rels, *dbg;
+    uint32_t        nvars;          // version 3: ;@var / ;@scope records (9 words each, after the string table)
+    const unsigned char  *words, *syms, *rels, *dbg, *vars;
     const char     *str;
     uint32_t        start;          // word offset of this object in the output
 }
@@ -128,14 +129,14 @@ static int  parse_object (object_t *o, const char *path, unsigned char *buf, siz
         return (-1);
     }
 
-    if (get32 (buf + 8) != 1 && get32 (buf + 8) != 2)
+    if (get32 (buf + 8) < 1 || get32 (buf + 8) > 3)
     {
         fprintf (stderr, "v32asld: %s: unsupported object format version %u\n", path, get32 (buf + 8));
         return (-1);
     }
 
     o -> version = get32 (buf + 8);
-    o -> dbgsz   = o -> version == 2 ? 16 : 12;
+    o -> dbgsz   = o -> version >= 2 ? 16 : 12;
 
     o -> raw     = own ? buf : NULL;
     o -> nwords  = get32 (buf + 12);
@@ -146,6 +147,23 @@ static int  parse_object (object_t *o, const char *path, unsigned char *buf, siz
 
     need = 32 + 4 * (size_t) o -> nwords + 12 * ((size_t) o -> nsyms + o -> nrels)
            + (size_t) o -> dbgsz * o -> ndbg + o -> strsize;
+
+    o -> nvars = 0;
+    o -> vars  = NULL;
+
+    if (o -> version == 3)
+    {
+        // after the string table: the number of ;@var / ;@scope records, then 9 words each
+        if (size < need + 4)
+        {
+            fprintf (stderr, "v32asld: %s: corrupt object (size does not match its header)\n", path);
+            return (-1);
+        }
+
+        o -> nvars = get32 (buf + need);
+        o -> vars  = buf + need + 4;
+        need      += 4 + 36 * (size_t) o -> nvars;
+    }
 
     if (need != size)
     {
@@ -432,10 +450,10 @@ static int  partial_link (object_t *obj, int nobj, const char *output)
     nsym_t     *ns = NULL;
     size_t      nns = 0, capn = 0, total = 0, i, k, m;
     uint32_t  **map = xrealloc (NULL, (size_t) nobj * sizeof (uint32_t *));
-    obuf_t      body = { 0 }, out = { 0 };
+    obuf_t      body = { 0 }, out = { 0 }, tr = { 0 };
     strtab_t    st;
     uint32_t    nrels = 0, ndbg = 0;
-    int         v2 = 0, pass;
+    int         v2 = 0, pass, has_vars = 0;
     FILE       *fp;
 
     memset (&st, 0, sizeof (st));
@@ -443,7 +461,7 @@ static int  partial_link (object_t *obj, int nobj, const char *output)
     for (i = 0; i < (size_t) nobj; i++)
     {
         map[i] = xrealloc (NULL, ((size_t) obj[i].nsyms + 1) * sizeof (uint32_t));
-        v2    |= obj[i].version == 2;
+        v2    |= obj[i].version >= 2;
         obj[i].start = (uint32_t) total;
         total += obj[i].nwords;
     }
@@ -589,7 +607,7 @@ static int  partial_link (object_t *obj, int nobj, const char *output)
 
             if (v2)
             {
-                uint32_t  fn = obj[i].version == 2 ? get32 (p + 12) : NO_STRING;
+                uint32_t  fn = obj[i].version >= 2 ? get32 (p + 12) : NO_STRING;
 
                 obuf_u32 (&body, (fn == NO_STRING || fn == NO_FUNC) ? fn : strtab_add (&st, ostr (&obj[i], fn)));
             }
@@ -598,8 +616,50 @@ static int  partial_link (object_t *obj, int nobj, const char *output)
         }
     }
 
+    // ;@var / ;@scope records of the inputs, moved to their place in the joined program
+    {
+        uint32_t  nv = 0;
+
+        for (i = 0; i < (size_t) nobj; i++)
+        {
+            nv += obj[i].nvars;
+        }
+
+        if (nv > 0)
+        {
+            obuf_u32 (&tr, nv);
+
+            for (i = 0; i < (size_t) nobj; i++)
+            {
+                for (k = 0; k < obj[i].nvars; k++)
+                {
+                    const unsigned char  *p = obj[i].vars + 36 * k;
+                    int                   f;
+
+                    obuf_u32 (&tr, get32 (p));
+                    obuf_u32 (&tr, obj[i].start + get32 (p + 4));
+                    obuf_u32 (&tr, obj[i].start + get32 (p + 8));
+
+                    for (f = 3; f < 7; f++)
+                    {
+                        uint32_t  so = get32 (p + 4 * f);
+
+                        obuf_u32 (&tr, so == NO_STRING ? NO_STRING : strtab_add (&st, ostr (&obj[i], so)));
+                    }
+
+                    obuf_u32 (&tr, get32 (p + 28));
+                    obuf_u32 (&tr, get32 (p + 32) == NO_STRING ? NO_STRING : strtab_add (&st, ostr (&obj[i], get32 (p + 32))));
+                }
+            }
+
+            v2 = 1;
+        }
+
+        has_vars = nv > 0;
+    }
+
     obuf_put (&out, "V32-VOBJ", 8);
-    obuf_u32 (&out, v2 ? 2 : 1);
+    obuf_u32 (&out, has_vars ? 3 : (v2 ? 2 : 1));
     obuf_u32 (&out, (uint32_t) total);
     obuf_u32 (&out, (uint32_t) nns);
     obuf_u32 (&out, nrels);
@@ -607,6 +667,7 @@ static int  partial_link (object_t *obj, int nobj, const char *output)
     obuf_u32 (&out, (uint32_t) st.tab.n);
     obuf_put (&out, body.p, body.n);
     obuf_put (&out, st.tab.p, st.tab.n);
+    obuf_put (&out, tr.p, tr.n);
 
     fp = fopen (output, "wb");
 
@@ -1419,7 +1480,7 @@ int  main (int argc, char **argv)
             for (k = 0; k < obj[i].ndbg; k++)
             {
                 const unsigned char  *p = obj[i].dbg + (size_t) obj[i].dbgsz * k;
-                uint32_t              fn = obj[i].version == 2 ? get32 (p + 12) : NO_STRING;
+                uint32_t              fn = obj[i].version >= 2 ? get32 (p + 12) : NO_STRING;
                 uint32_t              word = obj[i].start + get32 (p);
                 uint32_t              addr = base + word;
                 size_t                lo = 0, hi = nl;
@@ -1454,6 +1515,64 @@ int  main (int argc, char **argv)
         }
 
         fclose (fp);
+
+        // FILE.vars: the ;@var / ;@scope ranges the objects carry (same lines as 'v32as -g' writes)
+        {
+            size_t  nv = 0;
+
+            for (i = 0; i < nobj; i++)
+            {
+                nv += obj[i].nvars;
+            }
+
+            sprintf (path, "%s.vars", output);
+
+            if (nv == 0)
+            {
+                unlink (path);                  // an old file would mislead
+            }
+            else if ((fp = fopen (path, "w")) == NULL)
+            {
+                fprintf (stderr, "v32asld: cannot write '%s': %s\n", path, strerror (errno));
+                return (2);
+            }
+            else
+            {
+                for (i = 0; i < nobj; i++)
+                {
+                    for (k = 0; k < obj[i].nvars; k++)
+                    {
+                        const unsigned char  *p = obj[i].vars + 36 * k;
+                        uint32_t              ws = obj[i].start + get32 (p + 4), we = obj[i].start + get32 (p + 8);
+                        uint32_t              fno = get32 (p + 32);
+                        const char           *tp = get32 (p + 20) == NO_STRING ? "-" : ostr (&obj[i], get32 (p + 20));
+                        const char           *fl = get32 (p + 24) == NO_STRING ? "-" : ostr (&obj[i], get32 (p + 24));
+
+                        if (get32 (p) == 0)
+                        {
+                            fprintf (fp, "scope,0x%08X,0x%08X,%u", dmode == DBG_PROGRAM ? base + ws : base_off + ws * unit,
+                                     dmode == DBG_PROGRAM ? base + we : base_off + we * unit, get32 (p + 28));
+                        }
+                        else
+                        {
+                            fprintf (fp, "var,0x%08X,0x%08X,%s,%s,%s,%s,%u", dmode == DBG_PROGRAM ? base + ws : base_off + ws * unit,
+                                     dmode == DBG_PROGRAM ? base + we : base_off + we * unit, ostr (&obj[i], get32 (p + 12)),
+                                     ostr (&obj[i], get32 (p + 16)), tp, fl, get32 (p + 28));
+                        }
+
+                        if (fno != NO_STRING)
+                        {
+                            fprintf (fp, ",%s", ostr (&obj[i], fno));
+                        }
+
+                        fputc ('\n', fp);
+                    }
+                }
+
+                fclose (fp);
+            }
+        }
+
         free   (path);
         free   (lab);
     }

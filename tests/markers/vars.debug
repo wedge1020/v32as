@@ -1,0 +1,9 @@
+0x20000002,o.lua,1,outer
+0x20000004,o.lua,2,outer
+0x20000008,o.lua,3,outer
+0x2000000A,o.lua,4,outer
+0x2000000E,o.lua,5,outer
+0x20000012,o.lua,8,inner
+0x20000016,o.lua,9,outer
+0x20000018,-,0
+0x20000019,o.lua,10

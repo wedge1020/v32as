@@ -252,7 +252,7 @@ fail=$((fail + $(grep -c '^FAIL' "$T/va2out")))
     && [ "$(cat "$T/n5.vbin.debug")" = "0x20000000,MAP.c,9,mf" ] && echo ok || echo "FAIL: -C --map wins over ;@src"
   # -Wmarkers: off by default; one warning per malformed line
   "$BIN" --cart -B -g -o "$T/mk.vbin" bad.asm 2>&1 | grep -q 'malformed' && echo "FAIL: -Wmarkers is off by default" || echo ok
-  [ "$("$BIN" --cart -B -g -Wmarkers -o "$T/mk.vbin" bad.asm 2>&1 | grep -c 'malformed ;@src marker')" = 4 ] && echo ok || echo "FAIL: -Wmarkers warnings"
+  [ "$("$BIN" --cart -B -g -Wmarkers -o "$T/mk.vbin" bad.asm 2>&1 | grep -c 'malformed ;@src')" = 4 ] && echo ok || echo "FAIL: -Wmarkers warnings"
   [ "$(tail -1 "$T/mk.vbin.debug")" = "0x20000008,a.lua,9" ] && [ "$(grep -c ',-,0$' "$T/mk.vbin.debug")" = 4 ] && echo ok || echo "FAIL: a malformed ;@src is treated as ;@src -"
   # ;@src - gives the entry "ADDRESS,-,0" (v32sim ends the run of the line before it there)
   [ "$(grep -c '^0x2000000B,-,0$' bench.debug)" = 1 ] && echo ok || echo "FAIL: ;@src - entry"
@@ -262,5 +262,38 @@ fail=$((fail + $(grep -c '^FAIL' "$T/va2out")))
 grep '^FAIL' "$T/mkout"
 pass=$((pass + $(grep -c '^ok' "$T/mkout")))
 fail=$((fail + $(grep -c '^FAIL' "$T/mkout")))
+# ;@var / ;@scope: FILE.vars (address ranges), through objects, links and partial links
+( cd markers
+  for n in lua_dbg lua_edge vars; do
+    "$BIN" --cart -B -g -o "$T/$n.vbin" $n.asm 2>/dev/null \
+      && cmp -s "$T/$n.vbin.debug" $n.debug && cmp -s "$T/$n.vbin.vars" $n.vars && echo ok || echo "FAIL: $n .debug / .vars"
+  done
+  for n in lua_dbg lua_edge; do
+    "$BIN" -C -o "$T/$n.v32ob" $n.asm 2>/dev/null && "$LD" -c -g -o "$T/$n.l.vbin" "$T/$n.v32ob" 2>/dev/null \
+      && cmp -s "$T/$n.l.vbin.vars" $n.vars && cmp -s "$T/$n.l.vbin.debug" $n.debug && echo ok || echo "FAIL: $n through an object and the linker"
+    "$LD" -R -o "$T/$n.r.v32ob" "$T/$n.v32ob" 2>/dev/null && "$LD" -c -g -o "$T/$n.r.vbin" "$T/$n.r.v32ob" 2>/dev/null \
+      && cmp -s "$T/$n.r.vbin.vars" $n.vars && echo ok || echo "FAIL: $n through a partial link"
+  done
+  # two files, one function each: linking equals assembling the joined source
+  "$BIN" -C -o "$T/v1.v32ob" vl1.asm 2>/dev/null && "$BIN" -C -o "$T/v2.v32ob" vl2.asm 2>/dev/null \
+    && "$LD" -c -g -o "$T/vl.vbin" "$T/v1.v32ob" "$T/v2.v32ob" 2>/dev/null \
+    && cmp -s "$T/vl.vbin.vars" vl12.vars && cmp -s "$T/vl.vbin.debug" vl12.debug && echo ok || echo "FAIL: two files linked == the joined source"
+  "$LD" -R -o "$T/v12.v32ob" "$T/v1.v32ob" "$T/v2.v32ob" 2>/dev/null && "$LD" -c -g -o "$T/vp.vbin" "$T/v12.v32ob" 2>/dev/null \
+    && cmp -s "$T/vp.vbin.vars" vl12.vars && echo ok || echo "FAIL: two files partially linked"
+  # the file modes, the object version, no records -> no file (and an old one goes), --standard
+  "$BIN" --cart -B -g vbin -o "$T/vm.vbin" vl1.asm 2>/dev/null && head -1 "$T/vm.vbin.vars" | grep -q '^var,0x00000010,0x00000028,a,BP+2,lua,-,0,f$' && echo ok || echo "FAIL: .vars in -g vbin mode"
+  [ "$(od -An -tx4 -j8 -N4 "$T/v1.v32ob" | tr -d ' ')" = 00000003 ] && [ "$(od -An -tx4 -j8 -N4 "$T/n1.v32ob" | tr -d ' ')" = 00000002 ] && echo ok || echo "FAIL: object versions (3 with ;@var, 2 with ;@src only)"
+  printf 'old\n' > "$T/nv.vbin.vars"; "$BIN" --cart -B -g -o "$T/nv.vbin" nofn.asm 2>/dev/null; [ ! -e "$T/nv.vbin.vars" ] && echo ok || echo "FAIL: stale .vars is left"
+  "$BIN" --standard --cart -B -g -o "$T/sv.vbin" vars.asm 2>/dev/null; [ ! -e "$T/sv.vbin.vars" ] && echo ok || echo "FAIL: --standard writes .vars"
+  [ "$("$BIN" --cart -B -g -Wmarkers -o "$T/vw.vbin" vars.asm 2>&1 | grep -c 'warning')" = 2 ] && echo ok || echo "FAIL: -Wmarkers on ;@scope"
+  # the instructions do not depend on the comments
+  grep -v '^[[:space:]]*;@' lua_edge.asm > "$T/lua_plain.asm"
+  "$BIN" --cart -B -o "$T/lp1.vbin" lua_edge.asm 2>/dev/null && "$BIN" --cart -B -o "$T/lp2.vbin" "$T/lua_plain.asm" 2>/dev/null && cmp -s "$T/lp1.vbin" "$T/lp2.vbin" && echo ok || echo "FAIL: ;@ lines change the program"
+  # a nested function does not take over its parent's code; code after the last function has no function
+  grep -q '^0x2000008B,edge.lua,13,f$' lua_edge.debug && grep -q '^0x20000141,edge.lua,20$' lua_edge.debug && echo ok || echo "FAIL: functions in lua_edge.debug"
+) > "$T/varsout" 2>&1
+grep '^FAIL' "$T/varsout"
+pass=$((pass + $(grep -c '^ok' "$T/varsout")))
+fail=$((fail + $(grep -c '^FAIL' "$T/varsout")))
 echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

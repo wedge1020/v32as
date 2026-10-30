@@ -175,7 +175,10 @@ void  asm_free (asm_t *a)
     free (a -> rel);
     free (a -> rec);
     free (a -> pend);
-    free (a -> srcmk);
+    free (a -> ev);
+    free (a -> stk);
+    free (a -> vars);
+    free (a -> open);
 
     while (a -> nmkstr > 0)
     {
@@ -231,17 +234,28 @@ void  asm_reset (asm_t *a)
 
 ////////////////////////////////////////////////////////////////////////////////////////
 //
-// ;@src markers (V32DBG): a comment line of its own, written by the compilers
+// V32DBG comment lines: ;@src, ;@var, ;@scope, ;@fn (each a comment line of its own)
 //
 //     ;@src FILE:LINE         the instructions that follow come from FILE line LINE
 //     ;@src FILE:LINE:COL     the same, with a column (not used here)
 //     ;@src -                 the instructions that follow have no source (runtime, startup)
+//     ;@var NAME loc=BP-3 [type=lua] [boxed]   NAME lives at loc from the next instruction on
+//     ;@scope {  /  ;@scope }                  a block: its variables go out of scope at the }
+//     ;@fn __function_NAME ...                 written after a function's body: NAME ends here
 //
-// The scanner hands every such line over in order. The first instruction assembled after a marker
-// is the one the -g entry is written for (see asm_inst); the marker applies up to the next one.
+// The scanner hands every such line over, in order (asm_annotation). They are applied as the
+// instruction after them is assembled (ev_flush), so each one gets the address of the next
+// instruction. The first instruction after a ;@src carries the -g entry; the variables and blocks
+// become the address ranges of FILE.vars.
 //
-// the "file" of an entry for the instructions that have no source (";@src -"): v32sim reads "-" as "no source"
-static const char  src_none[] = "-";
+// A function starts at a "__function_NAME:" label and ends at the ";@fn __function_NAME" line (or at a
+// ";@src -", or at the end of the program). Functions nest (a Lua closure's body sits inside its
+// parent's code), so the open functions and blocks are kept in a stack.
+//
+// A variable is in scope from its ;@var to the end of the block it is declared in (the function, when
+// there is no block), or until another ;@var of the same name in the same block (a new home for it).
+//
+static const char  src_none[] = "-";            // the "file" of an entry for instructions with no source: v32sim reads "-,0"
 
 static int  all_digits (const char *p, size_t n)
 {
@@ -258,11 +272,11 @@ static int  all_digits (const char *p, size_t n)
     return (n > 0 && n <= 9);
 }
 
-static const char  *marker_file (asm_t *a, const char *p, size_t n)
+// a string that lives as long as the assembly; consecutive repeats are shared
+static const char  *keep_str (asm_t *a, const char *p, size_t n)
 {
     char  *copy;
 
-    // consecutive markers mostly name the same file
     if (a -> nmkstr > 0 && strlen (a -> mkstr[a -> nmkstr - 1]) == n
         && memcmp (a -> mkstr[a -> nmkstr - 1], p, n) == 0)
     {
@@ -284,34 +298,43 @@ static const char  *marker_file (asm_t *a, const char *p, size_t n)
     return (copy);
 }
 
-void  asm_src_marker (asm_t *a, const loc_t *loc, const char *text, size_t n)
+static srcev_t  *ev_add (asm_t *a, const loc_t *loc, evkind_t kind)
 {
-    const char  *p = text, *end = text + n, *colon, *file_end;
-    const char  *file = NULL;
+    srcev_t  *e;
+
+    if (a -> nev == a -> evcap)
+    {
+        a -> evcap = a -> evcap ? a -> evcap * 2 : 64;
+        a -> ev    = xrealloc (a -> ev, a -> evcap * sizeof (srcev_t));
+    }
+
+    e = &a -> ev[a -> nev++];
+
+    memset (e, 0, sizeof (*e));
+    e -> pline = loc -> first_line;
+    e -> kind  = kind;
+
+    return (e);
+}
+
+static int  is_blank (char c)
+{
+    return (c == ' ' || c == '\t' || c == '\r' || c == '\f' || c == '\v');
+}
+
+static void  bad_annotation (asm_t *a, const loc_t *loc, const char *what, const char *p, const char *end, const char *effect)
+{
+    if (a -> warn_markers)
+    {
+        asm_warn (a, loc, "malformed ;@%s line '%.*s' (%s)", what, (int) (end - p), p, effect);
+    }
+}
+
+// ;@src: the rest of the line is "-" or FILE:LINE[:COL]
+static void  annotate_src (asm_t *a, const loc_t *loc, const char *p, const char *end)
+{
+    const char  *file = NULL, *colon = NULL, *file_end;
     int          line = 0, dash = 0;
-
-    if (!a -> src_markers)
-    {
-        return;
-    }
-
-    // skip the blanks and ";@src", then the blanks; drop trailing blanks (and the \r of a CRLF file)
-    while (p < end && *p != ';')
-    {
-        p++;
-    }
-
-    p += 5;
-
-    while (p < end && (*p == ' ' || *p == '\t'))
-    {
-        p++;
-    }
-
-    while (end > p && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\f' || end[-1] == '\v'))
-    {
-        end--;
-    }
 
     if (end - p == 1 && *p == '-')
     {
@@ -319,10 +342,7 @@ void  asm_src_marker (asm_t *a, const loc_t *loc, const char *text, size_t n)
     }
     else
     {
-        // FILE:LINE or FILE:LINE:COL; the last ':' (or the last two) separate the numbers, so a
-        // drive letter in FILE is fine
-        colon = NULL;
-
+        // the last ':' (or the last two) separate the numbers from FILE, so a drive letter is fine
         for (file_end = end; file_end > p; file_end--)
         {
             if (file_end[-1] == ':')
@@ -356,7 +376,7 @@ void  asm_src_marker (asm_t *a, const loc_t *loc, const char *text, size_t n)
 
             if (line >= 1)
             {
-                file = marker_file (a, p, (size_t) (file_end - p));
+                file = keep_str (a, p, (size_t) (file_end - p));
             }
         }
 
@@ -377,27 +397,185 @@ void  asm_src_marker (asm_t *a, const loc_t *loc, const char *text, size_t n)
         a -> srcmk_seen++;
     }
 
-    if (file == NULL)
+    if (!a -> no_rec)
     {
-        file = src_none;                             // ";@src -" (and a malformed one): the entry "ADDRESS,-,0"
-        line = 0;
+        srcev_t  *e = ev_add (a, loc, file != NULL ? EV_SRC : EV_NONE);
+
+        e -> file = file != NULL ? file : src_none;
+        e -> line = file != NULL ? line : 0;
+    }
+}
+
+// ;@var NAME loc=... [type=...] [flags...]
+static void  annotate_var (asm_t *a, const loc_t *loc, const char *p, const char *end)
+{
+    const char  *name = p, *name_end = p, *q;
+    const char  *vloc = NULL, *vtype = NULL;
+    char         flags[128];
+    size_t       nflags = 0;
+    srcev_t     *e;
+
+    while (name_end < end && !is_blank (*name_end))
+    {
+        name_end++;
+    }
+
+    flags[0] = 0;
+    q = name_end;
+
+    while (q < end)
+    {
+        const char  *w, *we;
+
+        while (q < end && is_blank (*q))
+        {
+            q++;
+        }
+
+        w = q;
+
+        while (q < end && !is_blank (*q))
+        {
+            q++;
+        }
+
+        we = q;
+
+        if (we == w)
+        {
+            break;
+        }
+
+        if (we - w > 4 && memcmp (w, "loc=", 4) == 0)
+        {
+            vloc = keep_str (a, w + 4, (size_t) (we - w - 4));
+        }
+        else if (we - w > 5 && memcmp (w, "type=", 5) == 0)
+        {
+            vtype = keep_str (a, w + 5, (size_t) (we - w - 5));
+        }
+        else if (memchr (w, '=', (size_t) (we - w)) == NULL && nflags + (size_t) (we - w) + 2 < sizeof (flags))
+        {
+            // a bare word is a flag (boxed, optimized-out, ...); others (key=value we do not know) are ignored
+            if (nflags > 0)
+            {
+                flags[nflags++] = '+';
+            }
+
+            memcpy (flags + nflags, w, (size_t) (we - w));
+            nflags += (size_t) (we - w);
+            flags[nflags] = 0;
+        }
+    }
+
+    if (name_end == name || (vloc == NULL && strstr (flags, "optimized-out") == NULL))
+    {
+        bad_annotation (a, loc, "var", p, end, "expected NAME loc=WHERE; ignored");
+        return;
     }
 
     if (a -> no_rec)
     {
-        return;                                      // nothing will use it
+        return;
     }
 
-    if (a -> nsrcmk == a -> srcmkcap)
+    e = ev_add (a, loc, EV_VAR);
+
+    e -> name  = keep_str (a, name, (size_t) (name_end - name));
+    e -> loc   = vloc != NULL ? vloc : src_none;
+    e -> type  = vtype;
+    e -> flags = nflags > 0 ? keep_str (a, flags, nflags) : NULL;
+}
+
+void  asm_annotation (asm_t *a, const loc_t *loc, const char *text, size_t n)
+{
+    const char  *p = text, *end = text + n;
+    const char  *kind;
+    size_t       klen;
+
+    if (!a -> src_markers)
     {
-        a -> srcmkcap = a -> srcmkcap ? a -> srcmkcap * 2 : 64;
-        a -> srcmk    = xrealloc (a -> srcmk, a -> srcmkcap * sizeof (srcmark_t));
+        return;
     }
 
-    a -> srcmk[a -> nsrcmk].pline = loc -> first_line;
-    a -> srcmk[a -> nsrcmk].file  = file;
-    a -> srcmk[a -> nsrcmk].line  = line;
-    a -> nsrcmk++;
+    while (p < end && *p != ';')
+    {
+        p++;
+    }
+
+    p += 2;                                          // ";@"
+    kind = p;
+
+    while (p < end && !is_blank (*p))
+    {
+        p++;
+    }
+
+    klen = (size_t) (p - kind);
+
+    while (p < end && is_blank (*p))
+    {
+        p++;
+    }
+
+    while (end > p && is_blank (end[-1]))
+    {
+        end--;
+    }
+
+    if (klen == 3 && memcmp (kind, "src", 3) == 0)
+    {
+        if (p == end)
+        {
+            bad_annotation (a, loc, "src", p, end, "expected FILE:LINE, FILE:LINE:COL or -; the instructions that follow have no source");
+
+            if (!a -> no_rec)
+            {
+                srcev_t  *e = ev_add (a, loc, EV_NONE);
+
+                e -> file = src_none;
+            }
+
+            return;
+        }
+
+        annotate_src (a, loc, p, end);
+    }
+    else if (klen == 3 && memcmp (kind, "var", 3) == 0)
+    {
+        annotate_var (a, loc, p, end);
+    }
+    else if (klen == 5 && memcmp (kind, "scope", 5) == 0)
+    {
+        if (end - p == 1 && (*p == '{' || *p == '}'))
+        {
+            if (!a -> no_rec)
+            {
+                ev_add (a, loc, *p == '{' ? EV_SCOPE_OPEN : EV_SCOPE_CLOSE);
+            }
+        }
+        else
+        {
+            bad_annotation (a, loc, "scope", p, end, "expected { or }; ignored");
+        }
+    }
+    else if (klen == 2 && memcmp (kind, "fn", 2) == 0)
+    {
+        const char  *le = p;
+
+        // ";@fn __function_NAME attributes...": written after the body of NAME (above the label for runtime routines)
+        while (le < end && !is_blank (*le))
+        {
+            le++;
+        }
+
+        if (!a -> no_rec && le - p > 11 && memcmp (p, "__function_", 11) == 0)
+        {
+            srcev_t  *e = ev_add (a, loc, EV_FN_END);
+
+            e -> name = keep_str (a, p + 11, (size_t) (le - p - 11));
+        }
+    }
 }
 
 // -g / -C: are the debug entries made from ;@src markers?  (any marker in the source switches
@@ -405,6 +583,357 @@ void  asm_src_marker (asm_t *a, const loc_t *loc, const char *text, size_t n)
 static int  marker_mode (const asm_t *a)
 {
     return (a -> src_markers && a -> srcmk_seen > 0);
+}
+
+static const char  *cur_func_name (const asm_t *a)
+{
+    size_t  i;
+
+    for (i = a -> nstk; i > 0; i--)
+    {
+        if (a -> stk[i - 1].is_func)
+        {
+            return (a -> stk[i - 1].name);
+        }
+    }
+
+    return (NULL);
+}
+
+static int  cur_depth (const asm_t *a)
+{
+    size_t  i;
+    int     d = 0;
+
+    for (i = a -> nstk; i > 0 && !a -> stk[i - 1].is_func; i--)
+    {
+        d++;
+    }
+
+    return (d);
+}
+
+static void  var_close (asm_t *a, size_t k, uint32_t word)
+{
+    varrec_t  *v = &a -> vars[a -> open[k]];
+
+    v -> end  = word;
+    v -> skip = (word <= v -> start);
+
+    a -> open[k] = a -> open[--a -> nopen];
+}
+
+static void  vars_close_scope (asm_t *a, uint32_t scope_id, uint32_t word)
+{
+    size_t  k = 0;
+
+    while (k < a -> nopen)
+    {
+        if (a -> vars[a -> open[k]].scope_id == scope_id)
+        {
+            var_close (a, k, word);
+        }
+        else
+        {
+            k++;
+        }
+    }
+}
+
+static varrec_t  *var_new (asm_t *a)
+{
+    varrec_t  *v;
+
+    if (a -> nvars == a -> varcap)
+    {
+        a -> varcap = a -> varcap ? a -> varcap * 2 : 64;
+        a -> vars   = xrealloc (a -> vars, a -> varcap * sizeof (varrec_t));
+    }
+
+    v = &a -> vars[a -> nvars];
+
+    memset (v, 0, sizeof (*v));
+    v -> seq = (uint32_t) a -> nvars;
+
+    return (v);
+}
+
+static void  item_push (asm_t *a, int is_func, const char *name, uint32_t word)
+{
+    if (a -> nstk == a -> stkcap)
+    {
+        a -> stkcap = a -> stkcap ? a -> stkcap * 2 : 16;
+        a -> stk    = xrealloc (a -> stk, a -> stkcap * sizeof (scopeitem_t));
+    }
+
+    a -> stk[a -> nstk].is_func = is_func;
+    a -> stk[a -> nstk].name    = name;
+    a -> stk[a -> nstk].id      = ++a -> next_id;
+    a -> stk[a -> nstk].start   = word;
+    a -> nstk++;
+}
+
+// leave the innermost function or block at 'word'
+static void  item_pop (asm_t *a, uint32_t word)
+{
+    scopeitem_t  it = a -> stk[a -> nstk - 1];
+
+    if (!it.is_func)
+    {
+        varrec_t  *v = var_new (a);
+
+        v -> is_scope = 1;
+        v -> start    = it.start;
+        v -> end      = word;
+        v -> depth    = cur_depth (a);
+        v -> func     = cur_func_name (a);
+        v -> skip     = (word <= it.start);
+        a -> nvars++;
+    }
+
+    vars_close_scope (a, it.id, word);
+    a -> nstk--;
+}
+
+static void  ev_apply (asm_t *a, const srcev_t *e, uint32_t word)
+{
+    size_t  k;
+
+    switch (e -> kind)
+    {
+        case EV_SRC:
+            a -> pend_has  = 1;
+            a -> pend_file = e -> file;
+            a -> pend_line = e -> line;
+            break;
+
+        case EV_NONE:
+            // no source from here (the runtime, startup code): no function either
+            a -> pend_has  = 1;
+            a -> pend_file = e -> file;
+            a -> pend_line = 0;
+
+            while (a -> nstk > 0)
+            {
+                item_pop (a, word);
+            }
+
+            while (a -> nopen > 0)
+            {
+                var_close (a, a -> nopen - 1, word);
+            }
+            break;
+
+        case EV_VAR:
+        {
+            varrec_t  *v;
+            uint32_t   sid = a -> nstk > 0 ? a -> stk[a -> nstk - 1].id : 0;
+
+            // the same name in the same block is a new home for it (a re-declaration, or the optimizer's)
+            for (k = 0; k < a -> nopen; k++)
+            {
+                const varrec_t  *o = &a -> vars[a -> open[k]];
+
+                if (o -> scope_id == sid && strcmp (o -> name, e -> name) == 0)
+                {
+                    var_close (a, k, word);
+                    break;
+                }
+            }
+
+            v = var_new (a);
+
+            v -> start    = word;
+            v -> end      = 0xFFFFFFFFu;
+            v -> name     = e -> name;
+            v -> loc      = e -> loc;
+            v -> type     = e -> type;
+            v -> flags    = e -> flags;
+            v -> depth    = cur_depth (a);
+            v -> func     = cur_func_name (a);
+            v -> scope_id = sid;
+
+            if (a -> nopen == a -> opencap)
+            {
+                a -> opencap = a -> opencap ? a -> opencap * 2 : 16;
+                a -> open    = xrealloc (a -> open, a -> opencap * sizeof (size_t));
+            }
+
+            a -> open[a -> nopen++] = a -> nvars++;
+            break;
+        }
+
+        case EV_SCOPE_OPEN:
+            item_push (a, 0, NULL, word);
+            break;
+
+        case EV_SCOPE_CLOSE:
+            if (a -> nstk > 0 && !a -> stk[a -> nstk - 1].is_func)
+            {
+                item_pop (a, word);
+            }
+            else if (a -> warn_markers)
+            {
+                asm_warn (a, NULL, "';@scope }' with no ';@scope {' open; ignored");
+            }
+            break;
+
+        case EV_FN_END:
+            for (k = a -> nstk; k > 0; k--)
+            {
+                if (a -> stk[k - 1].is_func && strcmp (a -> stk[k - 1].name, e -> name) == 0)
+                {
+                    while (a -> nstk >= k)
+                    {
+                        item_pop (a, word);
+                    }
+
+                    break;
+                }
+            }
+            break;
+    }
+}
+
+// apply the events written before line 'upto' of the input text; 'word' is the address (word index)
+// of what comes next
+static void  ev_flush (asm_t *a, int upto, uint32_t word)
+{
+    while (a -> ev_next < a -> nev && a -> ev[a -> ev_next].pline < upto)
+    {
+        ev_apply (a, &a -> ev[a -> ev_next++], word);
+    }
+}
+
+static int  varrec_cmp (const void *x, const void *y)
+{
+    const varrec_t  *p = *(const varrec_t *const *) x, *q = *(const varrec_t *const *) y;
+
+    if (p -> start != q -> start)  { return (p -> start < q -> start ? -1 : 1); }
+    if (p -> is_scope != q -> is_scope)  { return (p -> is_scope ? -1 : 1); }
+    if (p -> is_scope && p -> depth != q -> depth)  { return (p -> depth < q -> depth ? -1 : 1); }     // outer block first
+
+    return (p -> seq < q -> seq ? -1 : (p -> seq > q -> seq ? 1 : 0));
+}
+
+static const varrec_t  **sorted_vars (asm_t *a, size_t *n)
+{
+    const varrec_t  **v = xrealloc (NULL, (a -> nvars + 1) * sizeof (varrec_t *));
+    size_t            i;
+
+    for (*n = 0, i = 0; i < a -> nvars; i++)
+    {
+        if (!a -> vars[i].skip)
+        {
+            v[(*n)++] = &a -> vars[i];
+        }
+    }
+
+    qsort (v, *n, sizeof (varrec_t *), varrec_cmp);
+
+    return (v);
+}
+
+size_t  asm_vars_finish (asm_t *a)
+{
+    size_t  i, n = 0;
+
+    if (!a -> ev_done && a -> src_markers)
+    {
+        a -> ev_done = 1;
+
+        ev_flush (a, 0x7FFFFFFF, (uint32_t) a -> nwords);
+
+        if (a -> warn_markers && a -> nstk > 0)
+        {
+            for (i = 0; i < a -> nstk; i++)
+            {
+                if (!a -> stk[i].is_func)
+                {
+                    asm_warn (a, NULL, "';@scope {' never closed");
+                    break;
+                }
+            }
+        }
+
+        while (a -> nstk > 0)
+        {
+            item_pop (a, (uint32_t) a -> nwords);
+        }
+
+        while (a -> nopen > 0)
+        {
+            var_close (a, a -> nopen - 1, (uint32_t) a -> nwords);
+        }
+    }
+
+    for (i = 0; i < a -> nvars; i++)
+    {
+        n += a -> vars[i].skip ? 0 : 1;
+    }
+
+    return (n);
+}
+
+const varrec_t  *asm_var_records (asm_t *a, size_t *n)
+{
+    // a flat copy in the written order (the object stores it that way)
+    const varrec_t  **v = sorted_vars (a, n);
+    varrec_t         *flat = xrealloc (NULL, (*n + 1) * sizeof (varrec_t));
+    size_t            i;
+
+    for (i = 0; i < *n; i++)
+    {
+        flat[i] = *v[i];
+    }
+
+    free (v);
+
+    return (flat);
+}
+
+// FILE.vars (-g, next to FILE.debug): the variables and blocks of the ";@var" / ";@scope" lines as address ranges
+//
+//     scope,START,END,DEPTH[,FUNCTION]
+//     var,START,END,NAME,LOC,TYPE,FLAGS,DEPTH[,FUNCTION]
+//
+// START and END are addresses as in FILE.debug (END is the first address that is out of scope), DEPTH is 0 for
+// the function's own scope and 1, 2, ... for blocks in it, TYPE and FLAGS are "-" when there are none (FLAGS:
+// words such as boxed, joined by '+'). In order of START (a scope before its variables).
+int  asm_write_vars (asm_t *a, FILE *fp, dbgmode_t mode)
+{
+    uint32_t          base_off = (mode == DBG_V32) ? 0x8C : (mode == DBG_VBIN ? 0x0C : 0);
+    uint32_t          unit     = (mode == DBG_PROGRAM) ? 1 : 4;
+    size_t            n, i;
+    const varrec_t  **v = sorted_vars (a, &n);
+
+    for (i = 0; i < n; i++)
+    {
+        const varrec_t  *r = v[i];
+        uint32_t         s = mode == DBG_PROGRAM ? a -> base + r -> start : base_off + r -> start * unit;
+        uint32_t         e = mode == DBG_PROGRAM ? a -> base + r -> end : base_off + r -> end * unit;
+
+        if (r -> is_scope)
+        {
+            fprintf (fp, "scope,0x%08X,0x%08X,%d", s, e, r -> depth);
+        }
+        else
+        {
+            fprintf (fp, "var,0x%08X,0x%08X,%s,%s,%s,%s,%d", s, e, r -> name, r -> loc,
+                     r -> type != NULL ? r -> type : "-", r -> flags != NULL ? r -> flags : "-", r -> depth);
+        }
+
+        if (r -> func != NULL)
+        {
+            fprintf (fp, ",%s", r -> func);
+        }
+
+        fputc ('\n', fp);
+    }
+
+    free (v);
+
+    return (ferror (fp) ? -1 : 0);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -521,17 +1050,19 @@ void  asm_label_define (asm_t *a, sym_t *s, const loc_t *loc)
     s -> addr    = here (a);
     s -> defined = 1;
 
-    // the function a ;@src entry is in: the latest "__function_NAME" label (what v32lua and the C
-    // compilers write at the start of a function)
-    if (strncmp (s -> name, "__function_", 11) == 0 && s -> name[11] != 0)
+    // a function starts: ";@src" entries, ";@var" and ";@scope" ranges after this belong to it. First apply what was
+    // written before the label.
+    if (a -> src_markers && !a -> no_rec && loc != NULL && strncmp (s -> name, "__function_", 11) == 0 && s -> name[11] != 0)
     {
-        const char  *fn = s -> name + 11;
-        size_t       n  = strlen (fn), cn = a -> cur_func != NULL ? strlen (a -> cur_func) : 0;
+        const char  *fn = s -> name + 11, *cur = cur_func_name (a);
+        size_t       n  = strlen (fn), cn = cur != NULL ? strlen (cur) : 0;
 
-        // "__function_NAME_return:" (stock compiler) is the end of the function NAME we are in, not a new one
-        if (!(cn > 0 && n == cn + 7 && memcmp (fn, a -> cur_func, cn) == 0 && strcmp (fn + cn, "_return") == 0))
+        ev_flush (a, loc -> first_line, (uint32_t) a -> nwords);
+
+        // "__function_NAME_return:" (the stock compiler's) is the end of the function NAME we are in, not a new one
+        if (!(cn > 0 && n == cn + 7 && memcmp (fn, cur, cn) == 0 && strcmp (fn + cn, "_return") == 0))
         {
-            a -> cur_func = fn;
+            item_push (a, 1, fn, (uint32_t) a -> nwords);
         }
     }
 
@@ -970,20 +1501,17 @@ void  asm_inst (asm_t *a, const loc_t *loc, unsigned opcode, unsigned r1, unsign
         a -> rec[a -> nrec].mline = 0;
         a -> rec[a -> nrec].mfunc = NULL;
 
-        // ;@src: the first instruction after a marker carries it (several markers in a row with no
-        // instruction between them: only the last one counts)
-        if (a -> srcmk_next < a -> nsrcmk && a -> srcmk[a -> srcmk_next].pline < loc -> first_line)
+        // V32DBG: apply the ;@ lines written before this instruction. The first instruction after a
+        // ;@src carries its -g entry (several markers in a row with no instruction between them: only the
+        // last one counts)
+        ev_flush (a, loc -> first_line, (uint32_t) a -> nwords);
+
+        if (a -> pend_has)
         {
-            const srcmark_t  *m = NULL;
-
-            while (a -> srcmk_next < a -> nsrcmk && a -> srcmk[a -> srcmk_next].pline < loc -> first_line)
-            {
-                m = &a -> srcmk[a -> srcmk_next++];
-            }
-
-            a -> rec[a -> nrec].mfile = m -> file;
-            a -> rec[a -> nrec].mline = m -> line;
-            a -> rec[a -> nrec].mfunc = m -> line > 0 ? a -> cur_func : NULL;      // "-,0" has no function
+            a -> rec[a -> nrec].mfile = a -> pend_file;
+            a -> rec[a -> nrec].mline = a -> pend_line;
+            a -> rec[a -> nrec].mfunc = a -> pend_line > 0 ? cur_func_name (a) : NULL;      // "-,0" has no function
+            a -> pend_has = 0;
         }
 
         a -> nrec++;
@@ -2457,7 +2985,10 @@ int  asm_write_object (asm_t *a, FILE *fp)
     uint32_t      nrels = 0, ndbg = 0;
     sym_t        *s;
     int           ok;
-    int           v2 = a -> has_datasym || asm_cmap_loaded () || marker_mode (a);   // flag 16, 4-word debug records
+    size_t        nvr = asm_vars_finish (a), vi;
+    const varrec_t  *vr = nvr > 0 ? asm_var_records (a, &nvr) : NULL;       // ;@var / ;@scope ranges: version 3
+    int           v2 = a -> has_datasym || asm_cmap_loaded () || marker_mode (a) || nvr > 0;   // flag 16, 4-word debug records
+    buf_t         trailer = { 0 };
 
     for (s = a -> first; s != NULL; s = s -> order)
     {
@@ -2599,8 +3130,30 @@ int  asm_write_object (asm_t *a, FILE *fp)
         ndbg++;
     }
 
+    // version 3: after the string table, the number of ;@var / ;@scope records and 9 words each
+    // (1 var / 0 scope, start, end, name, loc, type, flags, depth, func: strings are offsets or 0xFFFFFFFF)
+    if (nvr > 0)
+    {
+        buf_u32 (&trailer, (uint32_t) nvr);
+
+        for (vi = 0; vi < nvr; vi++)
+        {
+            buf_u32 (&trailer, vr[vi].is_scope ? 0 : 1);
+            buf_u32 (&trailer, vr[vi].start);
+            buf_u32 (&trailer, vr[vi].end);
+            buf_u32 (&trailer, vr[vi].name  != NULL ? str_add (&str, vr[vi].name)  : 0xFFFFFFFFu);
+            buf_u32 (&trailer, vr[vi].loc   != NULL ? str_add (&str, vr[vi].loc)   : 0xFFFFFFFFu);
+            buf_u32 (&trailer, vr[vi].type  != NULL ? str_add (&str, vr[vi].type)  : 0xFFFFFFFFu);
+            buf_u32 (&trailer, vr[vi].flags != NULL ? str_add (&str, vr[vi].flags) : 0xFFFFFFFFu);
+            buf_u32 (&trailer, (uint32_t) vr[vi].depth);
+            buf_u32 (&trailer, vr[vi].func  != NULL ? str_add (&str, vr[vi].func)  : 0xFFFFFFFFu);
+        }
+
+        v2 = 1;
+    }
+
     buf_put (&out, "V32-VOBJ", 8);
-    buf_u32 (&out, v2 ? 2 : 1);                         // format version
+    buf_u32 (&out, nvr > 0 ? 3 : (v2 ? 2 : 1));         // format version
     buf_u32 (&out, (uint32_t) a -> nwords);
     buf_u32 (&out, (uint32_t) nsyms);
     buf_u32 (&out, nrels);
@@ -2608,10 +3161,13 @@ int  asm_write_object (asm_t *a, FILE *fp)
     buf_u32 (&out, (uint32_t) str.n);
     buf_put (&out, body.p, body.n);
     buf_put (&out, str.p, str.n);
+    buf_put (&out, trailer.p, trailer.n);
 
     ok = (fwrite (out.p, 1, out.n, fp) == out.n);
 
     free (out.p);
+    free (trailer.p);
+    free ((void *) vr);
     free (str.p);
     free (body.p);
     free (files);

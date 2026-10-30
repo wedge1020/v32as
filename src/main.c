@@ -98,7 +98,8 @@ static void  usage (FILE *fp)
         "                       official assembler's \"-g MODE\"; when the source has ';@src FILE:LINE'\n"
         "                       lines (v32lua -g, v32cc -g) the entries come from them: one per marker,\n"
         "                       at its first instruction, with the function (__function_NAME) as 4th\n"
-        "                       column; --map wins for the instructions it names\n"
+        "                       column; --map wins for the instructions it names. ';@var'/';@scope' lines\n"
+        "                       also write FILE.vars (the locals as address ranges)\n"
         "  -C, --object         write a relocatable object (FILE.v32ob) for the linker v32asld; labels\n"
         "                       are relative to the object, 'global'/'extern' name the symbols shared\n"
         "                       with other objects, debug info is stored in the object\n"
@@ -124,7 +125,7 @@ static void  usage (FILE *fp)
         "                       the same name in the source warns and wins, unless the option is\n"
         "                       written -D!NAME=VALUE (or --force-define), when the command line wins\n"
         "  -Wno-redefine        do not warn when a %%define changes a macro's value (-Wredefine: do)\n"
-        "  -Wmarkers            warn about a malformed ;@src FILE:LINE line (off by default)\n"
+        "  -Wmarkers            warn about a malformed ;@src, ;@var or ;@scope line (off by default)\n"
         "  -U, --undef=NAME     remove a predefined symbol (processed in command line order)\n"
         "  -I, --include=DIR    add DIR to the %%include search path (may be repeated)\n"
         "  -E, --preprocess     only run the preprocessor and print the result\n"
@@ -1307,6 +1308,36 @@ int  main (int  argc, char **argv)
         if (dfp != NULL)
         {
             fclose (dfp);
+        }
+
+        free (path);
+    }
+
+    // FILE.vars: the ranges of the ;@var / ;@scope lines (only when there are some; an old file would mislead)
+    if (rc == 0 && opt.binary && opt.debug)
+    {
+        char   *path = malloc (strlen (opt.output) + 8);
+
+        sprintf (path, "%s.vars", opt.output);
+
+        if (asm_vars_finish (&a) > 0)
+        {
+            FILE  *vfp = fopen (path, "w");
+
+            if (vfp == NULL || asm_write_vars (&a, vfp, opt.debug_mode) != 0)
+            {
+                fprintf (stderr, "v32as: cannot write '%s': %s\n", path, strerror (errno));
+                rc = 2;
+            }
+
+            if (vfp != NULL)
+            {
+                fclose (vfp);
+            }
+        }
+        else
+        {
+            unlink (path);
         }
 
         free (path);

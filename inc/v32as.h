@@ -13,7 +13,7 @@
 
 #include "pp.h"
 
-#define  VERSION            "20261027-dev"
+#define  VERSION            "20261030-dev"
 
 #define  BIOS_BASE          0x10000000u
 #define  CART_BASE          0x20000000u
@@ -163,14 +163,46 @@ typedef struct
 }
 dbgrec_t;
 
-// one ";@src FILE:LINE" (or ";@src -", file NULL) line seen by the scanner, in source order
+// The ";@..." comment lines of V32DBG, in source order (the scanner hands them over; they are used when the
+// instruction that follows them is assembled)
+typedef enum { EV_SRC, EV_NONE, EV_VAR, EV_SCOPE_OPEN, EV_SCOPE_CLOSE, EV_FN_END } evkind_t;
+
 typedef struct
 {
     int          pline;             // line of the assembler's input text (the preprocessor's output)
-    const char  *file;              // "-" for ";@src -" (and for a malformed one), line 0
+    evkind_t     kind;
+    const char  *file;              // EV_SRC: FILE:LINE; EV_NONE (";@src -", or a malformed one): "-" and 0
     int          line;
+    const char  *name;              // EV_VAR: NAME (EV_FN_END: the function name, without "__function_")
+    const char  *loc;               // EV_VAR: loc= (or "-"), type= (or NULL), the other words joined by '+' (or NULL)
+    const char  *type;
+    const char  *flags;
 }
-srcmark_t;
+srcev_t;
+
+// ";@var" and ";@scope" resolved to addresses (word indexes of the assembled program), for FILE.vars
+typedef struct
+{
+    int          is_scope;
+    uint32_t     start, end;        // [start, end) in words; end 0xFFFFFFFF while still open
+    const char  *name;              // vars only
+    const char  *loc, *type, *flags;
+    int          depth;             // 0: the function's own scope, 1: a block in it, ...
+    const char  *func;              // the function it is in, or NULL
+    uint32_t     scope_id;
+    uint32_t     seq;
+    int          skip;              // empty range: not written
+}
+varrec_t;
+
+// the open functions and ";@scope {" blocks, innermost last
+typedef struct
+{
+    int          is_func;
+    uint32_t     id, start;
+    const char  *name;              // functions
+}
+scopeitem_t;
 
 typedef enum { DBG_PROGRAM, DBG_VBIN, DBG_V32 } dbgmode_t;
 
@@ -220,17 +252,27 @@ typedef struct asm_ctx
     size_t       nrec;
     size_t       reccap;
 
-    // ";@src FILE:LINE" markers (see V32DBG): they become the -g entries when --map does not name the instruction
-    srcmark_t   *srcmk;
-    size_t       nsrcmk;
-    size_t       srcmkcap;
-    size_t       srcmk_next;        // markers before this index belong to instructions already recorded
-    size_t       srcmk_seen;        // markers met (well formed or ";@src -"): non-zero switches -g to marker mode
-    char       **mkstr;             // the file names of the markers (kept for the life of the assembly)
+    // V32DBG ";@..." comment lines (see asm_annotation), consumed in order as the instructions after them are assembled
+    srcev_t     *ev;
+    size_t       nev;
+    size_t       evcap;
+    size_t       ev_next;           // events before this index have been applied
+    size_t       srcmk_seen;        // ;@src lines met (well formed or ";@src -"): non-zero switches -g to marker mode
+    int          pend_has;          // a ;@src applies to the next instruction
+    const char  *pend_file;
+    int          pend_line;
+    char       **mkstr;             // strings of the events (kept for the life of the assembly)
     size_t       nmkstr, mkstrcap;
-    const char  *cur_func;          // name of the latest "__function_NAME" label, without the prefix
-    int          src_markers;       // read ;@src comments (off under --standard)
-    int          warn_markers;      // -Wmarkers: warn about a malformed ;@src
+    scopeitem_t *stk;               // open functions and blocks
+    size_t       nstk, stkcap;
+    uint32_t     next_id;
+    varrec_t    *vars;              // ;@var / ;@scope as address ranges
+    size_t       nvars, varcap;
+    size_t      *open;              // indexes into vars of the ones still open
+    size_t       nopen, opencap;
+    int          ev_done;
+    int          src_markers;       // read ;@ lines (off under --standard)
+    int          warn_markers;      // -Wmarkers: warn about a malformed ;@src, ;@var or ;@scope
 
     // state
     const char  *cur_file;
@@ -303,7 +345,10 @@ int     asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode);   // needs asm
 int     asm_cmap_load       (FILE *cmap, const char *cmap_name);    // --map: returns the malformed lines
 void    asm_cmap_free       (void);
 int     asm_cmap_loaded     (void);
-void    asm_src_marker      (asm_t *a, const loc_t *loc, const char *text, size_t n);   // a ;@src comment line
+void    asm_annotation      (asm_t *a, const loc_t *loc, const char *text, size_t n);   // a ;@src, ;@var, ;@scope or ;@fn comment line
+size_t  asm_vars_finish     (asm_t *a);                             // close what is open; the number of FILE.vars records
+int     asm_write_vars      (asm_t *a, FILE *fp, dbgmode_t mode);   // FILE.vars: var and scope ranges (after asm_vars_finish)
+const varrec_t  *asm_var_records (asm_t *a, size_t *n);             // the records, sorted, empty ranges left out (for the object writer)
 void    asm_cmap_note       (const char *file, int line);           // note: the C line of an assembly line
 void    asm_print_labels    (asm_t *a, FILE *fp);
 void    asm_add_dep         (asm_t *a, const char *path);

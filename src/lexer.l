@@ -112,9 +112,10 @@ IDENT       [A-Za-z_][A-Za-z0-9_]*
 %%
 
 {WS}                    { /* skip blanks */ }
-^{WS}?";@src"([ \t\r\f\v][^\n]*)?   {
-                            /* a ;@src marker is a comment line of its own (V32DBG); anywhere else it is just a comment */
-                            asm_src_marker (yyextra, yylloc, yytext, (size_t) yyleng);
+^{WS}?";@"("src"|"var"|"scope"|"fn")([ \t\r\f\v][^\n]*)?   {
+                            /* a ;@src / ;@var / ;@scope / ;@fn line is a comment line of its own for the V32DBG tools;
+                               anywhere else it is just a comment */
+                            asm_annotation (yyextra, yylloc, yytext, (size_t) yyleng);
                         }
 ;[^\n]*                 { /* comment */ }
 \n                      {

@@ -38,6 +38,38 @@ design notes, `tests/`, `experiments/`; `make` puts generated files in `build/` 
 - **`-MD -MMD -MP -MF FILE -MT TARGET` (VA-6)**: the sources, `%include` files and `datafile` files read, as a Makefile rule
   (default file: the output name with `.d`).
 
+## Round-12 additions (answers to V32DBG: `;@var`, `;@scope`, functions)
+
+- **`NAME.vbin.vars`** (with `-g`, next to `NAME.vbin.debug`; only when the source has `;@var` lines; an old file is removed
+  otherwise): the locals as address ranges, which only the assembler can compute. Addresses as in `.debug` (`-g`, `-g vbin`,
+  `-g v32`), END being the first address that is out of scope. One CSV line each, in order of START (a block before its variables):
+
+  ```
+  scope,START,END,DEPTH[,FUNCTION]
+  var,START,END,NAME,LOC,TYPE,FLAGS,DEPTH[,FUNCTION]
+  ```
+
+  `LOC` is the `loc=` as written (`BP-3`, `BP+2`, `R5`, `@0x20003000`, a symbol; `-` for `optimized-out`), `TYPE` the `type=` (`-`
+  if none), `FLAGS` the bare words after it (`boxed`, `optimized-out`, joined by `+`; `-` if none; `key=value` words other than
+  `loc`/`type` are ignored). `DEPTH` is 0 for the function's own scope and 1, 2, ... for blocks in it, so the sim can pick the
+  innermost of two variables with the same name. The scope lines are the `;@scope {` ... `}` blocks.
+- **Ranges.** A `;@var` is in scope from the first instruction after it. It ends at the `;@scope }` of the block it was declared
+  in, or, with no block, at the end of the function; or at another `;@var` of the **same name in the same block** (a new home,
+  e.g. the optimizer's `loc=R5`, or `;@var NAME optimized-out`). A same-name `;@var` in a *nested* block shadows and does not end
+  the outer one. Empty ranges (`do end`) are left out. An unbalanced `;@scope }` is ignored and an open block is closed with its
+  function (both warn under `-Wmarkers`).
+- **Functions** (also for the `FUNCTION` column of `.debug`): a function starts at a `__function_NAME:` label and ends at the
+  line `;@fn __function_NAME ...` that the Lua compiler writes after its body, at a `;@src -`, or at the end of the program.
+  Functions nest (a Lua closure's body sits inside its parent's code, and the parent's code after it is the parent's again), and
+  code between functions or after `;@src -` (global initialisation, the runtime) has no function. A `;@fn` written *above* a
+  label (the runtime's `clobbers=` form) is not an end. `__function_NAME_return:` is not a function.
+- **Multi-file (`-C`).** The object stores the records (format version 3, see `docs/OBJECT.md`) and `v32asld -g` writes
+  `NAME.vbin.vars` as `v32as -g` would for the joined source; `v32asld -R` keeps them. Tested with two files, one function each.
+- **`-Wmarkers`** also covers `;@var` (no NAME or no `loc=`), `;@scope` (not `{` or `}`) and the block errors above.
+- `--standard`: the `;@` lines are comments; no `.vars`.
+- Tests: `tests/markers/` has the `v32lua -g` samples `lua_dbg.asm` and `lua_edge.asm` (the runtime replaced by stubs) with
+  their `.debug` and `.vars`, `vars.asm` (every rule above), and `vl1.asm`/`vl2.asm` (linked == joined).
+
 ## Round-11 additions (answers to PROPOSAL-v32as: `;@src` markers)
 
 - **`-g` reads `;@src` markers (no `--map` needed)**: a comment line of its own, `;@src FILE:LINE` (or `FILE:LINE:COL`;
@@ -50,9 +82,9 @@ design notes, `tests/`, `experiments/`; `make` puts generated files in `build/` 
 - **`;@src -` (v32sim request)**: the first instruction after it gets the entry `ADDRESS,-,0` (file `-`, line 0, no function), so
   the sim knows where the last source line ends and the runtime begins. A malformed marker counts as `;@src -`. Instructions
   before the first marker still have no entry.
-- **FUNCTION**: the latest label `__function_NAME` defined at or before the instruction, written `NAME`
-  (`__function_main:` -> `main`, `__function_f__l0:` -> `f__l0`); `__function_NAME_return:` (the stock compiler's) is the end of
-  NAME, not a new function; no fourth column when there has been none. Unlike plain
+- **FUNCTION**: the function the instruction is in (see Round-12 for how functions start and end), written `NAME`
+  (`__function_main:` -> `main`, `__function_f__l0:` -> `f__l0`); no fourth column outside functions. Every entry of a function
+  has it, not only the first. Unlike plain
   `-g` (which writes the first label at the address) no other label is written in marker mode.
 - **`--map FILE` still works**: for an instruction the map names, the map's entry is written; every other marker still
   gets its own. `v32cc` writes no markers today, so its output does not change.
