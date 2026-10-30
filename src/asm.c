@@ -1060,7 +1060,10 @@ void  asm_label_define (asm_t *a, sym_t *s, const loc_t *loc)
         ev_flush (a, loc -> first_line, (uint32_t) a -> nwords);
 
         // "__function_NAME_return:" (the stock compiler's) is the end of the function NAME we are in, not a new one
-        if (!(cn > 0 && n == cn + 7 && memcmp (fn, cur, cn) == 0 && strcmp (fn + cn, "_return") == 0))
+        // and "__function_NAME__LOCAL:" is the .LOCAL label of the function NAME we are in (the preprocessor writes a
+        // .local label as the last global label, "__", and its name; v32cc's default syntax has them in every function)
+        if (!(cn > 0 && n == cn + 7 && memcmp (fn, cur, cn) == 0 && strcmp (fn + cn, "_return") == 0)
+            && !(cn > 0 && n > cn + 2 && memcmp (fn, cur, cn) == 0 && fn[cn] == '_' && fn[cn + 1] == '_'))
         {
             item_push (a, 1, fn, (uint32_t) a -> nwords);
         }
