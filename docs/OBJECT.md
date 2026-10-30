@@ -47,7 +47,7 @@ All numbers are 32-bit little endian words.
 
 A version 2 object is written when the source has a `datasym`, `--map` was given or the source has `;@src` markers; version 1 otherwise. `v32asld` reads both.
 
-With `;@src` markers (V32DBG) the debug records are the marker entries, not one per instruction: `word` is the first instruction after the marker, `file`/`line` the marker's, `func` the `__function_NAME` in effect (`NAME`) or `0xFFFFFFFE`, which says "no function" (the linker then writes no label for the record, as `v32as -g` does not). `--map` entries replace the marker's for the instructions the map names.
+With `;@src` markers (V32DBG) the debug records are the marker entries, not one per instruction: `word` is the first instruction after the marker, `file`/`line` the marker's, `func` the `__function_NAME` in effect (`NAME`) or `0xFFFFFFFE`, which says "no function" (the linker then writes no label for the record, as `v32as -g` does not). A `;@src -` is the record with file `-` and line 0 (func `0xFFFFFFFE`). `--map` entries replace the marker's for the instructions the map names.
 
 A relocation says: the final value of `word` is `address(symbol) + addend`. With symbol `0xFFFFFFFF` it is
 `load address of the object + addend` (the values computed from an instruction's own address: `MOV Rn, IP`,

@@ -240,6 +240,9 @@ void  asm_reset (asm_t *a)
 // The scanner hands every such line over in order. The first instruction assembled after a marker
 // is the one the -g entry is written for (see asm_inst); the marker applies up to the next one.
 //
+// the "file" of an entry for the instructions that have no source (";@src -"): v32sim reads "-" as "no source"
+static const char  src_none[] = "-";
+
 static int  all_digits (const char *p, size_t n)
 {
     size_t  i;
@@ -372,6 +375,12 @@ void  asm_src_marker (asm_t *a, const loc_t *loc, const char *text, size_t n)
     if (file != NULL || dash)
     {
         a -> srcmk_seen++;
+    }
+
+    if (file == NULL)
+    {
+        file = src_none;                             // ";@src -" (and a malformed one): the entry "ADDRESS,-,0"
+        line = 0;
     }
 
     if (a -> no_rec)
@@ -516,7 +525,14 @@ void  asm_label_define (asm_t *a, sym_t *s, const loc_t *loc)
     // compilers write at the start of a function)
     if (strncmp (s -> name, "__function_", 11) == 0 && s -> name[11] != 0)
     {
-        a -> cur_func = s -> name + 11;
+        const char  *fn = s -> name + 11;
+        size_t       n  = strlen (fn), cn = a -> cur_func != NULL ? strlen (a -> cur_func) : 0;
+
+        // "__function_NAME_return:" (stock compiler) is the end of the function NAME we are in, not a new one
+        if (!(cn > 0 && n == cn + 7 && memcmp (fn, a -> cur_func, cn) == 0 && strcmp (fn + cn, "_return") == 0))
+        {
+            a -> cur_func = fn;
+        }
     }
 
     // code or data? the next thing assembled tells (see settle_labels)
@@ -965,12 +981,9 @@ void  asm_inst (asm_t *a, const loc_t *loc, unsigned opcode, unsigned r1, unsign
                 m = &a -> srcmk[a -> srcmk_next++];
             }
 
-            if (m -> file != NULL)
-            {
-                a -> rec[a -> nrec].mfile = m -> file;
-                a -> rec[a -> nrec].mline = m -> line;
-                a -> rec[a -> nrec].mfunc = a -> cur_func;
-            }
+            a -> rec[a -> nrec].mfile = m -> file;
+            a -> rec[a -> nrec].mline = m -> line;
+            a -> rec[a -> nrec].mfunc = m -> line > 0 ? a -> cur_func : NULL;      // "-,0" has no function
         }
 
         a -> nrec++;

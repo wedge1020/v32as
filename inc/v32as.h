@@ -13,7 +13,7 @@
 
 #include "pp.h"
 
-#define  VERSION            "20261030-dev"
+#define  VERSION            "20261027-dev"
 
 #define  BIOS_BASE          0x10000000u
 #define  CART_BASE          0x20000000u
@@ -158,7 +158,7 @@ typedef struct
     const char  *file;
     int          line;
     const char  *mfile;             // ;@src: the source file/line of the marker this instruction is the first
-    int          mline;             //   one after (mfile NULL: the instruction starts no marker, or the
+    int          mline;             //   one after (mfile NULL: the instruction starts no marker; "-" and 0: the
     const char  *mfunc;             //   marker was ";@src -"); mfunc: the function label in effect, or NULL
 }
 dbgrec_t;
@@ -167,7 +167,7 @@ dbgrec_t;
 typedef struct
 {
     int          pline;             // line of the assembler's input text (the preprocessor's output)
-    const char  *file;
+    const char  *file;              // "-" for ";@src -" (and for a malformed one), line 0
     int          line;
 }
 srcmark_t;

@@ -253,7 +253,11 @@ fail=$((fail + $(grep -c '^FAIL' "$T/va2out")))
   # -Wmarkers: off by default; one warning per malformed line
   "$BIN" --cart -B -g -o "$T/mk.vbin" bad.asm 2>&1 | grep -q 'malformed' && echo "FAIL: -Wmarkers is off by default" || echo ok
   [ "$("$BIN" --cart -B -g -Wmarkers -o "$T/mk.vbin" bad.asm 2>&1 | grep -c 'malformed ;@src marker')" = 4 ] && echo ok || echo "FAIL: -Wmarkers warnings"
-  [ "$(cat "$T/mk.vbin.debug")" = "0x20000008,a.lua,9" ] && echo ok || echo "FAIL: a malformed ;@src leaves its instructions without an entry"
+  [ "$(tail -1 "$T/mk.vbin.debug")" = "0x20000008,a.lua,9" ] && [ "$(grep -c ',-,0$' "$T/mk.vbin.debug")" = 4 ] && echo ok || echo "FAIL: a malformed ;@src is treated as ;@src -"
+  # ;@src - gives the entry "ADDRESS,-,0" (v32sim ends the run of the line before it there)
+  [ "$(grep -c '^0x2000000B,-,0$' bench.debug)" = 1 ] && echo ok || echo "FAIL: ;@src - entry"
+  # the function: __function_NAME_return is the end of NAME, not a function
+  "$BIN" --cart -B -g -o "$T/mk.vbin" ret.asm 2>/dev/null && cmp -s "$T/mk.vbin.debug" ret.debug && echo ok || echo "FAIL: __function_NAME_return is not a function"
 ) > "$T/mkout" 2>&1
 grep '^FAIL' "$T/mkout"
 pass=$((pass + $(grep -c '^ok' "$T/mkout")))

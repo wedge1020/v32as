@@ -44,12 +44,15 @@ design notes, `tests/`, `experiments/`; `make` puts generated files in `build/` 
   `;@src -` for "no source"), as `v32lua -g` writes it (see V32DBG-SPEC). When the source has any marker, `NAME.vbin.debug`
   gets `ADDRESS,FILE,LINE[,FUNCTION]` from them: **one entry per marker, at the address of the first instruction after it**
   (so two consecutive markers naming the same line give two entries; markers with no instruction between them give one,
-  for the last). An instruction no marker starts has no entry, and the instructions after `;@src -` (and before the first
-  marker) have none either. FILE is split from LINE at the last `:` (or the last two when both end in digits), so a drive
+  for the last). An instruction no marker starts has no entry (those before the first marker have none at all). FILE is split from LINE at the last `:` (or the last two when both end in digits), so a drive
   letter is fine. The marker must be the first thing on its line (a trailing `;@src ...` after an instruction is only a comment).
   Markers survive `%include` and macros as the comments they are; the file name in the marker is what is written.
+- **`;@src -` (v32sim request)**: the first instruction after it gets the entry `ADDRESS,-,0` (file `-`, line 0, no function), so
+  the sim knows where the last source line ends and the runtime begins. A malformed marker counts as `;@src -`. Instructions
+  before the first marker still have no entry.
 - **FUNCTION**: the latest label `__function_NAME` defined at or before the instruction, written `NAME`
-  (`__function_main:` -> `main`, `__function_f__l0:` -> `f__l0`); no fourth column when there has been none. Unlike plain
+  (`__function_main:` -> `main`, `__function_f__l0:` -> `f__l0`); `__function_NAME_return:` (the stock compiler's) is the end of
+  NAME, not a new function; no fourth column when there has been none. Unlike plain
   `-g` (which writes the first label at the address) no other label is written in marker mode.
 - **`--map FILE` still works**: for an instruction the map names, the map's entry is written; every other marker still
   gets its own. `v32cc` writes no markers today, so its output does not change.
@@ -58,7 +61,7 @@ design notes, `tests/`, `experiments/`; `make` puts generated files in `build/` 
   `v32as -g` on the joined source. The `--map` precedence is the same.
 - **`--standard`**: markers are comments; `-g` writes the assembly lines as before.
 - **`-Wmarkers`** (off by default; `-Wno-markers`): warn about a `;@src` whose `FILE:LINE` is malformed (no `:`, a line that is
-  not a number >= 1, nothing after `;@src`). Such a marker is treated as `;@src -`: no source is better than a wrong line.
+  not a number >= 1, nothing after `;@src`). Such a marker is treated as `;@src -` (entry `-,0`): no source is better than a wrong line.
   `-w` silences it.
 - Tests: `tests/markers/` (golden `.debug` files; markers and `--map` of the same lines give the same file; `--map` wins;
   `-C` + `v32asld -g` and a partial link give the same file; the program is byte-identical with the markers removed).
