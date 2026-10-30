@@ -62,6 +62,7 @@ typedef struct
     const char  *dep_target;        // -MT TARGET
     int          dep_phony;         // -MP
     int          no_redefine;       // -Wno-redefine
+    int          warn_markers;      // -Wmarkers: warn about a malformed ;@src line
 }
 options_t;
 
@@ -94,7 +95,10 @@ static void  usage (FILE *fp)
         "      --v32x-data=N    or, without it, from the source's %%define __V32X_DATAWORDS (v32cc --data-after-text)\n"
         "  -g, --debug[=MODE]   also write FILE.debug (CSV: address,file,line[,label]) next to the\n"
         "                       output file; MODE is program (default), vbin or v32, as in the\n"
-        "                       official assembler's \"-g MODE\"\n"
+        "                       official assembler's \"-g MODE\"; when the source has ';@src FILE:LINE'\n"
+        "                       lines (v32lua -g, v32cc -g) the entries come from them: one per marker,\n"
+        "                       at its first instruction, with the function (__function_NAME) as 4th\n"
+        "                       column; --map wins for the instructions it names\n"
         "  -C, --object         write a relocatable object (FILE.v32ob) for the linker v32asld; labels\n"
         "                       are relative to the object, 'global'/'extern' name the symbols shared\n"
         "                       with other objects, debug info is stored in the object\n"
@@ -120,6 +124,7 @@ static void  usage (FILE *fp)
         "                       the same name in the source warns and wins, unless the option is\n"
         "                       written -D!NAME=VALUE (or --force-define), when the command line wins\n"
         "  -Wno-redefine        do not warn when a %%define changes a macro's value (-Wredefine: do)\n"
+        "  -Wmarkers            warn about a malformed ;@src FILE:LINE line (off by default)\n"
         "  -U, --undef=NAME     remove a predefined symbol (processed in command line order)\n"
         "  -I, --include=DIR    add DIR to the %%include search path (may be repeated)\n"
         "  -E, --preprocess     only run the preprocessor and print the result\n"
@@ -823,9 +828,11 @@ int  main (int  argc, char **argv)
             case 'W':
                 if (strcmp (optarg, "no-redefine") == 0)       { opt.no_redefine = 1; }
                 else if (strcmp (optarg, "redefine") == 0)     { opt.no_redefine = 0; }
+                else if (strcmp (optarg, "markers") == 0)      { opt.warn_markers = 1; }
+                else if (strcmp (optarg, "no-markers") == 0)   { opt.warn_markers = 0; }
                 else
                 {
-                    fprintf (stderr, "v32as: unknown warning option -W%s (use -Wredefine or -Wno-redefine)\n", optarg);
+                    fprintf (stderr, "v32as: unknown warning option -W%s (use -Wredefine, -Wno-redefine, -Wmarkers or -Wno-markers)\n", optarg);
                     return (2);
                 }
                 break;
@@ -1085,6 +1092,8 @@ int  main (int  argc, char **argv)
     a.verbose  = opt.verbose && !opt.standard;      // --standard: -v is the official stage log
     a.step     = opt.step && !opt.standard;         // official: -s has no effect
     a.standard = opt.standard;
+    a.src_markers  = !opt.standard;                 // ;@src comments are read except under --standard
+    a.warn_markers = opt.warn_markers && !opt.standard;
     a.no_warn  = opt.no_warn;
     a.incdirs  = incdirs;
     a.nincdirs = nincdirs;

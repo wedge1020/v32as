@@ -19,7 +19,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define  VERSION      "20261025-dev"
+#define  VERSION      "20261030-dev"
 #define  BIOS_BASE    0x10000000u
 #define  CART_BASE    0x20000000u
 
@@ -30,6 +30,7 @@
 #define  SYM_DATASYM  16u       // a datasym: the base of the data, value 0 wherever the object goes (version 2)
 #define  NO_SYMBOL    0xFFFFFFFFu
 #define  NO_STRING    0xFFFFFFFFu
+#define  NO_FUNC      0xFFFFFFFEu     // a ;@src entry with no function: the debug file gets no label either
 
 typedef struct
 {
@@ -590,7 +591,7 @@ static int  partial_link (object_t *obj, int nobj, const char *output)
             {
                 uint32_t  fn = obj[i].version == 2 ? get32 (p + 12) : NO_STRING;
 
-                obuf_u32 (&body, fn == NO_STRING ? NO_STRING : strtab_add (&st, ostr (&obj[i], fn)));
+                obuf_u32 (&body, (fn == NO_STRING || fn == NO_FUNC) ? fn : strtab_add (&st, ostr (&obj[i], fn)));
             }
 
             ndbg++;
@@ -1435,9 +1436,13 @@ int  main (int argc, char **argv)
                 put_path (fp, ostr (&obj[i], get32 (p + 4)));
                 fprintf (fp, ",%u", get32 (p + 8));
 
-                if (fn != NO_STRING)
+                if (fn == NO_FUNC)
                 {
-                    fprintf (fp, ",%s", ostr (&obj[i], fn));            // the function, from --map
+                    // ;@src entry with no function: nothing more on the line
+                }
+                else if (fn != NO_STRING)
+                {
+                    fprintf (fp, ",%s", ostr (&obj[i], fn));            // the function, from --map or ;@src
                 }
                 else if (lo < nl && lab[lo].addr == addr)
                 {

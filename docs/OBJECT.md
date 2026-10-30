@@ -45,7 +45,9 @@ All numbers are 32-bit little endian words.
 | debug | 3 x ndbg (4 x in version 2) | `word`, `file` (string offset), `line`: one per instruction; version 2 adds `func`, a string offset or `0xFFFFFFFF`, the function of a `--map` entry |
 | string table | strsize bytes | NUL terminated strings |
 
-A version 2 object is written when the source has a `datasym` or `--map` was given; version 1 otherwise. `v32asld` reads both.
+A version 2 object is written when the source has a `datasym`, `--map` was given or the source has `;@src` markers; version 1 otherwise. `v32asld` reads both.
+
+With `;@src` markers (V32DBG) the debug records are the marker entries, not one per instruction: `word` is the first instruction after the marker, `file`/`line` the marker's, `func` the `__function_NAME` in effect (`NAME`) or `0xFFFFFFFE`, which says "no function" (the linker then writes no label for the record, as `v32as -g` does not). `--map` entries replace the marker's for the instructions the map names.
 
 A relocation says: the final value of `word` is `address(symbol) + addend`. With symbol `0xFFFFFFFF` it is
 `load address of the object + addend` (the values computed from an instruction's own address: `MOV Rn, IP`,

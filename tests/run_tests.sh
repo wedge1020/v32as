@@ -226,5 +226,37 @@ done
 grep '^FAIL' "$T/va2out"
 pass=$((pass + $(grep -c '^ok' "$T/va2out")))
 fail=$((fail + $(grep -c '^FAIL' "$T/va2out")))
+# ;@src markers: -g (and -C) take the entries from them; --map wins for the instructions it names
+( cd markers
+  "$BIN" --cart -B -g -o "$T/mk.vbin" bench.asm 2>/dev/null && cmp -s "$T/mk.vbin.debug" bench.debug && echo ok || echo "FAIL: ;@src -g entries"
+  "$BIN" --cart -B -g -o "$T/mk.vbin" bench.asm 2>/dev/null; cp "$T/mk.vbin.debug" "$T/mk1.debug"
+  "$BIN" --cart -B -g --map bench.map -o "$T/mk.vbin" bench.asm 2>/dev/null && cmp -s "$T/mk.vbin.debug" "$T/mk1.debug" && echo ok || echo "FAIL: ;@src -g equals --map of the same lines"
+  "$BIN" --cart -B -g --map bench_mapwins.map -o "$T/mk.vbin" bench.asm 2>/dev/null && cmp -s "$T/mk.vbin.debug" bench_mapwins.debug && echo ok || echo "FAIL: --map wins over ;@src"
+  "$BIN" --cart -B -g vbin -o "$T/mk.vbin" bench.asm 2>/dev/null && cmp -s "$T/mk.vbin.debug" bench_vbin.debug && echo ok || echo "FAIL: ;@src with -g vbin"
+  "$BIN" --cart -B -g -o "$T/mk.vbin" edge.asm 2>/dev/null && cmp -s "$T/mk.vbin.debug" edge.debug && echo ok || echo "FAIL: ;@src edge cases (CRLF, trailing comment, two in a row)"
+  "$BIN" --cart -B -g -o "$T/mk.vbin" main2.asm 2>/dev/null && cmp -s "$T/mk.vbin.debug" include.debug && echo ok || echo "FAIL: ;@src across %include"
+  # the markers do not change the program, and under --standard they are plain comments (assembly lines)
+  grep -v '^[[:space:]]*;@src' bench.asm > "$T/nomk.asm"
+  "$BIN" --cart -B -o "$T/mk.vbin" bench.asm 2>/dev/null && "$BIN" --cart -B -o "$T/nomk.vbin" "$T/nomk.asm" 2>/dev/null \
+    && cmp -s "$T/mk.vbin" "$T/nomk.vbin" && echo ok || echo "FAIL: ;@src changes the output"
+  "$BIN" --standard --cart -B -g -o "$T/mk.vbin" bench.asm 2>/dev/null && grep -q '^0x20000000,bench.asm,2$' "$T/mk.vbin.debug" \
+    && [ "$(wc -l < "$T/mk.vbin.debug")" -gt 4 ] && echo ok || echo "FAIL: --standard ignores ;@src"
+  # -C: the object stores the entries; v32asld -g writes the same file (and no invented label for a marker without function)
+  "$BIN" -C -o "$T/mk.v32ob" bench.asm 2>/dev/null && "$LD" -c -g -o "$T/mko.vbin" "$T/mk.v32ob" 2>/dev/null \
+    && cmp -s "$T/mko.vbin.debug" bench.debug && echo ok || echo "FAIL: -C then v32asld -g with ;@src"
+  "$BIN" -C -o "$T/n1.v32ob" nofn.asm 2>/dev/null && "$BIN" -C -o "$T/n2.v32ob" main2.asm 2>/dev/null \
+    && "$LD" -c -g -o "$T/n.vbin" "$T/n1.v32ob" "$T/n2.v32ob" 2>/dev/null && "$LD" -R -o "$T/n3.v32ob" "$T/n1.v32ob" "$T/n2.v32ob" 2>/dev/null \
+    && "$LD" -c -g -o "$T/n4.vbin" "$T/n3.v32ob" 2>/dev/null && cmp -s "$T/n.vbin.debug" "$T/n4.vbin.debug" \
+    && [ "$(head -1 "$T/n.vbin.debug")" = "0x20000000,x.lua,1" ] && echo ok || echo "FAIL: ;@src through a link and a partial link"
+  "$BIN" -C --map nofn.map -o "$T/n5.v32ob" nofn.asm 2>/dev/null && "$LD" -c -g -o "$T/n5.vbin" "$T/n5.v32ob" 2>/dev/null \
+    && [ "$(cat "$T/n5.vbin.debug")" = "0x20000000,MAP.c,9,mf" ] && echo ok || echo "FAIL: -C --map wins over ;@src"
+  # -Wmarkers: off by default; one warning per malformed line
+  "$BIN" --cart -B -g -o "$T/mk.vbin" bad.asm 2>&1 | grep -q 'malformed' && echo "FAIL: -Wmarkers is off by default" || echo ok
+  [ "$("$BIN" --cart -B -g -Wmarkers -o "$T/mk.vbin" bad.asm 2>&1 | grep -c 'malformed ;@src marker')" = 4 ] && echo ok || echo "FAIL: -Wmarkers warnings"
+  [ "$(cat "$T/mk.vbin.debug")" = "0x20000008,a.lua,9" ] && echo ok || echo "FAIL: a malformed ;@src leaves its instructions without an entry"
+) > "$T/mkout" 2>&1
+grep '^FAIL' "$T/mkout"
+pass=$((pass + $(grep -c '^ok' "$T/mkout")))
+fail=$((fail + $(grep -c '^FAIL' "$T/mkout")))
 echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

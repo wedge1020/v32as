@@ -13,7 +13,7 @@
 
 #include "pp.h"
 
-#define  VERSION            "20261027-dev"
+#define  VERSION            "20261030-dev"
 
 #define  BIOS_BASE          0x10000000u
 #define  CART_BASE          0x20000000u
@@ -157,8 +157,20 @@ typedef struct
     uint32_t     word;              // index of the instruction's first word in the output
     const char  *file;
     int          line;
+    const char  *mfile;             // ;@src: the source file/line of the marker this instruction is the first
+    int          mline;             //   one after (mfile NULL: the instruction starts no marker, or the
+    const char  *mfunc;             //   marker was ";@src -"); mfunc: the function label in effect, or NULL
 }
 dbgrec_t;
+
+// one ";@src FILE:LINE" (or ";@src -", file NULL) line seen by the scanner, in source order
+typedef struct
+{
+    int          pline;             // line of the assembler's input text (the preprocessor's output)
+    const char  *file;
+    int          line;
+}
+srcmark_t;
 
 typedef enum { DBG_PROGRAM, DBG_VBIN, DBG_V32 } dbgmode_t;
 
@@ -207,6 +219,18 @@ typedef struct asm_ctx
     dbgrec_t    *rec;
     size_t       nrec;
     size_t       reccap;
+
+    // ";@src FILE:LINE" markers (see V32DBG): they become the -g entries when --map does not name the instruction
+    srcmark_t   *srcmk;
+    size_t       nsrcmk;
+    size_t       srcmkcap;
+    size_t       srcmk_next;        // markers before this index belong to instructions already recorded
+    size_t       srcmk_seen;        // markers met (well formed or ";@src -"): non-zero switches -g to marker mode
+    char       **mkstr;             // the file names of the markers (kept for the life of the assembly)
+    size_t       nmkstr, mkstrcap;
+    const char  *cur_func;          // name of the latest "__function_NAME" label, without the prefix
+    int          src_markers;       // read ;@src comments (off under --standard)
+    int          warn_markers;      // -Wmarkers: warn about a malformed ;@src
 
     // state
     const char  *cur_file;
@@ -279,6 +303,7 @@ int     asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode);   // needs asm
 int     asm_cmap_load       (FILE *cmap, const char *cmap_name);    // --map: returns the malformed lines
 void    asm_cmap_free       (void);
 int     asm_cmap_loaded     (void);
+void    asm_src_marker      (asm_t *a, const loc_t *loc, const char *text, size_t n);   // a ;@src comment line
 void    asm_cmap_note       (const char *file, int line);           // note: the C line of an assembly line
 void    asm_print_labels    (asm_t *a, FILE *fp);
 void    asm_add_dep         (asm_t *a, const char *path);

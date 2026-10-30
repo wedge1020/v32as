@@ -112,6 +112,10 @@ IDENT       [A-Za-z_][A-Za-z0-9_]*
 %%
 
 {WS}                    { /* skip blanks */ }
+^{WS}?";@src"([ \t\r\f\v][^\n]*)?   {
+                            /* a ;@src marker is a comment line of its own (V32DBG); anywhere else it is just a comment */
+                            asm_src_marker (yyextra, yylloc, yytext, (size_t) yyleng);
+                        }
 ;[^\n]*                 { /* comment */ }
 \n                      {
                             yyextra -> lex_line++;

@@ -175,6 +175,14 @@ void  asm_free (asm_t *a)
     free (a -> rel);
     free (a -> rec);
     free (a -> pend);
+    free (a -> srcmk);
+
+    while (a -> nmkstr > 0)
+    {
+        free (a -> mkstr[--a -> nmkstr]);
+    }
+
+    free (a -> mkstr);
 
     while (a -> ndeps > 0)
     {
@@ -212,10 +220,182 @@ void  asm_reset (asm_t *a)
     a -> interactive = saved.interactive;
     a -> standard    = saved.standard;
     a -> no_warn     = saved.no_warn;
+    a -> src_markers = saved.src_markers;
+    a -> warn_markers = saved.warn_markers;
     a -> incdirs     = saved.incdirs;
     a -> nincdirs    = saved.nincdirs;
     a -> out         = saved.out;
     a -> dbg         = saved.dbg;
+}
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// ;@src markers (V32DBG): a comment line of its own, written by the compilers
+//
+//     ;@src FILE:LINE         the instructions that follow come from FILE line LINE
+//     ;@src FILE:LINE:COL     the same, with a column (not used here)
+//     ;@src -                 the instructions that follow have no source (runtime, startup)
+//
+// The scanner hands every such line over in order. The first instruction assembled after a marker
+// is the one the -g entry is written for (see asm_inst); the marker applies up to the next one.
+//
+static int  all_digits (const char *p, size_t n)
+{
+    size_t  i;
+
+    for (i = 0; i < n; i++)
+    {
+        if (p[i] < '0' || p[i] > '9')
+        {
+            return (0);
+        }
+    }
+
+    return (n > 0 && n <= 9);
+}
+
+static const char  *marker_file (asm_t *a, const char *p, size_t n)
+{
+    char  *copy;
+
+    // consecutive markers mostly name the same file
+    if (a -> nmkstr > 0 && strlen (a -> mkstr[a -> nmkstr - 1]) == n
+        && memcmp (a -> mkstr[a -> nmkstr - 1], p, n) == 0)
+    {
+        return (a -> mkstr[a -> nmkstr - 1]);
+    }
+
+    if (a -> nmkstr == a -> mkstrcap)
+    {
+        a -> mkstrcap = a -> mkstrcap ? a -> mkstrcap * 2 : 16;
+        a -> mkstr    = xrealloc (a -> mkstr, a -> mkstrcap * sizeof (char *));
+    }
+
+    copy = xrealloc (NULL, n + 1);
+    memcpy (copy, p, n);
+    copy[n] = 0;
+
+    a -> mkstr[a -> nmkstr++] = copy;
+
+    return (copy);
+}
+
+void  asm_src_marker (asm_t *a, const loc_t *loc, const char *text, size_t n)
+{
+    const char  *p = text, *end = text + n, *colon, *file_end;
+    const char  *file = NULL;
+    int          line = 0, dash = 0;
+
+    if (!a -> src_markers)
+    {
+        return;
+    }
+
+    // skip the blanks and ";@src", then the blanks; drop trailing blanks (and the \r of a CRLF file)
+    while (p < end && *p != ';')
+    {
+        p++;
+    }
+
+    p += 5;
+
+    while (p < end && (*p == ' ' || *p == '\t'))
+    {
+        p++;
+    }
+
+    while (end > p && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\f' || end[-1] == '\v'))
+    {
+        end--;
+    }
+
+    if (end - p == 1 && *p == '-')
+    {
+        dash = 1;
+    }
+    else
+    {
+        // FILE:LINE or FILE:LINE:COL; the last ':' (or the last two) separate the numbers, so a
+        // drive letter in FILE is fine
+        colon = NULL;
+
+        for (file_end = end; file_end > p; file_end--)
+        {
+            if (file_end[-1] == ':')
+            {
+                colon = file_end - 1;
+                break;
+            }
+        }
+
+        if (colon != NULL && colon > p && all_digits (colon + 1, (size_t) (end - colon - 1)))
+        {
+            const char  *c2 = NULL, *q;
+
+            line     = atoi (colon + 1);
+            file_end = colon;
+
+            for (q = colon; q > p; q--)
+            {
+                if (q[-1] == ':')
+                {
+                    c2 = q - 1;
+                    break;
+                }
+            }
+
+            if (c2 != NULL && c2 > p && all_digits (c2 + 1, (size_t) (colon - c2 - 1)))
+            {
+                line     = atoi (c2 + 1);            // FILE:LINE:COL
+                file_end = c2;
+            }
+
+            if (line >= 1)
+            {
+                file = marker_file (a, p, (size_t) (file_end - p));
+            }
+        }
+
+        if (file == NULL)
+        {
+            if (a -> warn_markers)
+            {
+                asm_warn (a, loc, "malformed ;@src marker '%.*s' (expected FILE:LINE, FILE:LINE:COL or -); "
+                                  "the instructions that follow have no source", (int) (end - p), p);
+            }
+
+            line = 0;                                // treated like ";@src -": better none than a wrong line
+        }
+    }
+
+    if (file != NULL || dash)
+    {
+        a -> srcmk_seen++;
+    }
+
+    if (a -> no_rec)
+    {
+        return;                                      // nothing will use it
+    }
+
+    if (a -> nsrcmk == a -> srcmkcap)
+    {
+        a -> srcmkcap = a -> srcmkcap ? a -> srcmkcap * 2 : 64;
+        a -> srcmk    = xrealloc (a -> srcmk, a -> srcmkcap * sizeof (srcmark_t));
+    }
+
+    a -> srcmk[a -> nsrcmk].pline = loc -> first_line;
+    a -> srcmk[a -> nsrcmk].file  = file;
+    a -> srcmk[a -> nsrcmk].line  = line;
+    a -> nsrcmk++;
+}
+
+// -g / -C: are the debug entries made from ;@src markers?  (any marker in the source switches
+// to them: an instruction no marker starts then has no entry, as in --map)
+static int  marker_mode (const asm_t *a)
+{
+    return (a -> src_markers && a -> srcmk_seen > 0);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -331,6 +511,13 @@ void  asm_label_define (asm_t *a, sym_t *s, const loc_t *loc)
 
     s -> addr    = here (a);
     s -> defined = 1;
+
+    // the function a ;@src entry is in: the latest "__function_NAME" label (what v32lua and the C
+    // compilers write at the start of a function)
+    if (strncmp (s -> name, "__function_", 11) == 0 && s -> name[11] != 0)
+    {
+        a -> cur_func = s -> name + 11;
+    }
 
     // code or data? the next thing assembled tells (see settle_labels)
     if (a -> npend == a -> pendcap)
@@ -760,9 +947,32 @@ void  asm_inst (asm_t *a, const loc_t *loc, unsigned opcode, unsigned r1, unsign
 
         asm_resolve (a, loc -> first_line, &file, &line, &expanded);
 
-        a -> rec[a -> nrec].word = (uint32_t) a -> nwords;
-        a -> rec[a -> nrec].file = file;
-        a -> rec[a -> nrec].line = line;
+        a -> rec[a -> nrec].word  = (uint32_t) a -> nwords;
+        a -> rec[a -> nrec].file  = file;
+        a -> rec[a -> nrec].line  = line;
+        a -> rec[a -> nrec].mfile = NULL;
+        a -> rec[a -> nrec].mline = 0;
+        a -> rec[a -> nrec].mfunc = NULL;
+
+        // ;@src: the first instruction after a marker carries it (several markers in a row with no
+        // instruction between them: only the last one counts)
+        if (a -> srcmk_next < a -> nsrcmk && a -> srcmk[a -> srcmk_next].pline < loc -> first_line)
+        {
+            const srcmark_t  *m = NULL;
+
+            while (a -> srcmk_next < a -> nsrcmk && a -> srcmk[a -> srcmk_next].pline < loc -> first_line)
+            {
+                m = &a -> srcmk[a -> srcmk_next++];
+            }
+
+            if (m -> file != NULL)
+            {
+                a -> rec[a -> nrec].mfile = m -> file;
+                a -> rec[a -> nrec].mline = m -> line;
+                a -> rec[a -> nrec].mfunc = a -> cur_func;
+            }
+        }
+
         a -> nrec++;
     }
 
@@ -1487,16 +1697,31 @@ int  asm_write_debug (asm_t *a, FILE *fp, dbgmode_t mode)
         const dbgrec_t  *r   = &a -> rec[i];
         const sym_t     *lab = label_at (v, n, a -> base + r -> word);
 
+        if (marker_mode (a))
+        {
+            // ;@src: one entry per marker, at the first instruction after it, naming the function
+            if (r -> mfile == NULL)
+            {
+                continue;
+            }
+
+            lab = NULL;
+        }
+
         // program mode prints the address the CPU will see (this is what the official
         // assembler really prints); the file modes print the byte offset in the file
         fprintf (fp, "0x%08X,", mode == DBG_PROGRAM ? a -> base + r -> word
                                                     : base_off + r -> word * unit);
-        put_path (fp, r -> file);
-        fprintf (fp, ",%d", r -> line);
+        put_path (fp, r -> mfile != NULL && marker_mode (a) ? r -> mfile : r -> file);
+        fprintf (fp, ",%d", r -> mfile != NULL && marker_mode (a) ? r -> mline : r -> line);
 
         if (lab != NULL)
         {
             fprintf (fp, ",%s", lab -> name);
+        }
+        else if (marker_mode (a) && r -> mfunc != NULL)
+        {
+            fprintf (fp, ",%s", r -> mfunc);
         }
 
         fputc ('\n', fp);
@@ -1945,12 +2170,27 @@ int  asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode)
 
             fputc ('\n', fp);
         }
+        else if (marker_mode (a) && r -> mfile != NULL)
+        {
+            // the map does not name this instruction: its ;@src marker does
+            fprintf (fp, "0x%08X,", mode == DBG_PROGRAM ? a -> base + r -> word
+                                                        : base_off + r -> word * unit);
+            put_path (fp, r -> mfile);
+            fprintf (fp, ",%d", r -> mline);
+
+            if (r -> mfunc != NULL)
+            {
+                fprintf (fp, ",%s", r -> mfunc);
+            }
+
+            fputc ('\n', fp);
+        }
 
         free (file);
     }
 
     // some misses are normal (hand-written lines have no C line); all of them is not
-    if (a -> nrec > 0 && matched == 0 && !a -> no_warn)
+    if (a -> nrec > 0 && matched == 0 && !a -> no_warn && !marker_mode (a))
     {
         const char  *last = NULL;
         int          shown = 0;
@@ -2204,7 +2444,7 @@ int  asm_write_object (asm_t *a, FILE *fp)
     uint32_t      nrels = 0, ndbg = 0;
     sym_t        *s;
     int           ok;
-    int           v2 = a -> has_datasym || asm_cmap_loaded ();      // flag 16, 4-word debug records
+    int           v2 = a -> has_datasym || asm_cmap_loaded () || marker_mode (a);   // flag 16, 4-word debug records
 
     for (s = a -> first; s != NULL; s = s -> order)
     {
@@ -2274,6 +2514,8 @@ int  asm_write_object (asm_t *a, FILE *fp)
         const char      *file = a -> rec[i].file;
         int              line = a -> rec[i].line;
         const mapent_t  *hit = NULL;
+        const char      *mfunc = NULL;
+        int              from_marker = 0;
         uint32_t         func = 0xFFFFFFFFu;
 
         if (asm_cmap_loaded ())
@@ -2283,13 +2525,30 @@ int  asm_write_object (asm_t *a, FILE *fp)
             hit = cmap_find (the_cmap, nf, a -> rec[i].line);
             free (nf);
 
-            if (hit == NULL)
+            if (hit != NULL)
+            {
+                file = hit -> cfile;
+                line = hit -> cline;
+            }
+        }
+
+        // ;@src markers: the entry of the marker's first instruction (the map, if it names the
+        // instruction, wins)
+        if (hit == NULL && marker_mode (a))
+        {
+            if (a -> rec[i].mfile == NULL)
             {
                 continue;
             }
 
-            file = hit -> cfile;
-            line = hit -> cline;
+            file        = a -> rec[i].mfile;
+            line        = a -> rec[i].mline;
+            mfunc       = a -> rec[i].mfunc;
+            from_marker = 1;
+        }
+        else if (hit == NULL && asm_cmap_loaded ())
+        {
+            continue;
         }
 
         for (j = 0; j < nfiles && strcmp (files[j], file) != 0; j++)
@@ -2308,6 +2567,11 @@ int  asm_write_object (asm_t *a, FILE *fp)
         if (hit != NULL && hit -> func != NULL)
         {
             func = str_add (&str, hit -> func);
+        }
+        else if (from_marker)
+        {
+            // the function of the marker, or "none" (0xFFFFFFFE): the linker must not make up a label
+            func = mfunc != NULL ? str_add (&str, mfunc) : 0xFFFFFFFEu;
         }
 
         buf_u32 (&body, a -> rec[i].word);

@@ -38,6 +38,31 @@ design notes, `tests/`, `experiments/`; `make` puts generated files in `build/` 
 - **`-MD -MMD -MP -MF FILE -MT TARGET` (VA-6)**: the sources, `%include` files and `datafile` files read, as a Makefile rule
   (default file: the output name with `.d`).
 
+## Round-11 additions (answers to PROPOSAL-v32as: `;@src` markers)
+
+- **`-g` reads `;@src` markers (no `--map` needed)**: a comment line of its own, `;@src FILE:LINE` (or `FILE:LINE:COL`;
+  `;@src -` for "no source"), as `v32lua -g` writes it (see V32DBG-SPEC). When the source has any marker, `NAME.vbin.debug`
+  gets `ADDRESS,FILE,LINE[,FUNCTION]` from them: **one entry per marker, at the address of the first instruction after it**
+  (so two consecutive markers naming the same line give two entries; markers with no instruction between them give one,
+  for the last). An instruction no marker starts has no entry, and the instructions after `;@src -` (and before the first
+  marker) have none either. FILE is split from LINE at the last `:` (or the last two when both end in digits), so a drive
+  letter is fine. The marker must be the first thing on its line (a trailing `;@src ...` after an instruction is only a comment).
+  Markers survive `%include` and macros as the comments they are; the file name in the marker is what is written.
+- **FUNCTION**: the latest label `__function_NAME` defined at or before the instruction, written `NAME`
+  (`__function_main:` -> `main`, `__function_f__l0:` -> `f__l0`); no fourth column when there has been none. Unlike plain
+  `-g` (which writes the first label at the address) no other label is written in marker mode.
+- **`--map FILE` still works**: for an instruction the map names, the map's entry is written; every other marker still
+  gets its own. `v32cc` writes no markers today, so its output does not change.
+- **`-C`**: the object stores the marker entries in place of the assembly lines (format version 2; function word
+  `0xFFFFFFFE` means "no function, and `v32asld -g` must not add a label"), so `v32asld -g` writes the same file as
+  `v32as -g` on the joined source. The `--map` precedence is the same.
+- **`--standard`**: markers are comments; `-g` writes the assembly lines as before.
+- **`-Wmarkers`** (off by default; `-Wno-markers`): warn about a `;@src` whose `FILE:LINE` is malformed (no `:`, a line that is
+  not a number >= 1, nothing after `;@src`). Such a marker is treated as `;@src -`: no source is better than a wrong line.
+  `-w` silences it.
+- Tests: `tests/markers/` (golden `.debug` files; markers and `--map` of the same lines give the same file; `--map` wins;
+  `-C` + `v32asld -g` and a partial link give the same file; the program is byte-identical with the markers removed).
+
 ## Round-10 additions (answers to the V32DOS proposal)
 
 - **Bug fixed (VA-1)**: a symbol's `datasym` flag was never initialised, so on larger inputs ordinary labels read
@@ -82,7 +107,7 @@ a VBIN for a cartridge. (Reading STDIN, the output goes to STDOUT.)
   Its addresses start at 0 unless `-b/-c/-O` is given. `-n/--none` is `-T` with no base address.
   (`-B/--binary` still exists, and only says what is already the default.)
 - `-w/--no-warnings` inhibits all warnings.
-- `-g/--debug[=MODE]` also writes `FILE.debug` (CSV `address,file,line[,label]`, one line per instruction) next to the output file. Plain `-g` is byte-identical to the official assembler's `-g program` (absolute word addresses, e.g. `0x20000000`). `-g vbin` / `-g v32` give real byte offsets in the .vbin (0x0C header) or .v32 (0x8C header) file; the official tool's versions of those two print wrapped-around values. A source file literally named `program`, `vbin` or `v32` must be written `./program`.
+- `-g/--debug[=MODE]` also writes `FILE.debug` (CSV `address,file,line[,label]`, one line per instruction; with `;@src` markers in the source, one per marker, see Round-11) next to the output file. Plain `-g` is byte-identical to the official assembler's `-g program` (absolute word addresses, e.g. `0x20000000`). `-g vbin` / `-g v32` give real byte offsets in the .vbin (0x0C header) or .v32 (0x8C header) file; the official tool's versions of those two print wrapped-around values. A source file literally named `program`, `vbin` or `v32` must be written `./program`.
 - `--map FILE`: FILE is the compiler's debug file (`asmfile,asmline,cfile,cline[,function]`, as `v32cc -g` writes it). The `.debug` file then has the same layout, but each instruction names the C file and line (and the function as the label column), which is what v32sim's C overlay reads. Instructions whose assembly line is not in FILE are left out. `--map` also works with `-C` and for diagnostics, see Round-10.
 - `-r/--relocs FILE` writes `index,0xVALUE` for every word that holds an address resolved from a label (code or data, `label+N` included) or computed from the instruction's own address (`MOV Rn, IP`, the `IR`/`IV` patch addresses). Plain numbers that happen to look like addresses are never listed, so a loader can relocate a module by adding the base difference to those words. A source that declares `datasym NAME` (enhanced syntax; the value of `NAME` is 0, so `NAME+17` is a word holding 17) gets a third column, `,C` for a code address (moves with the load address) and `,D` for a reference to a datasym (moves with the base of the module's data). `v32cc --pic-data` writes every global's address that way. A datasym can be used with `-C` too; `v32asld -r` then writes the same column.
 
