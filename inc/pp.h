@@ -54,6 +54,7 @@ int          pp_pending      (const pp_t *p);       // inside %macro / %rep / %i
 // Results
 const char     *pp_output   (const pp_t *p, size_t *len);
 const srcloc_t *pp_linemap  (const pp_t *p, size_t *nlines);
+void            pp_reserve_output (pp_t *p, size_t chars);   // size the output buffer once, from an estimate of the output length
 void            pp_output_clear (pp_t *p);
 char           *pp_output_take  (pp_t *p, size_t *len);   // the output buffer, now the caller's (malloc'd, room for len + 4)
 unsigned        pp_errors   (const pp_t *p);

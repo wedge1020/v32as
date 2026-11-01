@@ -490,7 +490,10 @@ static int  process_source (asm_t *a, pp_t *pp, const options_t *opt, FILE *out,
     size_t           olen;
     size_t           nmap;
     const srcloc_t  *map;
-    int              failed = (pp_process (pp, name, text, len) != 0);
+    int              failed;
+
+    pp_reserve_output (pp, len + len / 2);
+    failed = (pp_process (pp, name, text, len) != 0);
 
     free (text);
     if (!failed)
@@ -520,7 +523,16 @@ static int  process_file (asm_t *a, pp_t *pp, const options_t *opt, FILE *out, c
     size_t           olen;
     size_t           nmap;
     const srcloc_t  *map;
-    int              failed = (pp_process_file (pp, name, fp) != 0) || ferror (fp);
+    int              failed;
+    long             size;
+
+    // a file of known size: the output buffer is allocated once at about its final size, not doubled (v32nix: a character is a word)
+    if (fp != stdin && fseek (fp, 0, SEEK_END) == 0 && (size = ftell (fp)) > 0 && fseek (fp, 0, SEEK_SET) == 0)
+    {
+        pp_reserve_output (pp, (size_t) size + (size_t) size / 2);
+    }
+
+    failed = (pp_process_file (pp, name, fp) != 0) || ferror (fp);
 
     if (!failed)
     {

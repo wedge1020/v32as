@@ -86,13 +86,30 @@ static void  buf_reserve (buf_t *b, size_t extra)
     {
         size_t  cap = b -> cap ? b -> cap : 256;
 
+        // doubling a big buffer needs the old and the new one at once and leaves the old one as a hole (v32nix: a character
+        // is a word and a process has at most ~500 K of them), so past 32 K characters it grows by half
         while (b -> len + extra + 1 > cap)
         {
-            cap *= 2;
+            cap += cap < 32768 ? cap : cap / 2;
         }
 
         b -> s   = xrealloc (b -> s, cap);
         b -> cap = cap;
+    }
+}
+
+// room for exactly CHARS characters (and the NUL): one allocation of the final size, no doubling
+static void  buf_reserve_exact (buf_t *b, size_t chars)
+{
+    if (chars + 1 > b -> cap)
+    {
+        b -> s   = xrealloc (b -> s, chars + 1);
+        b -> cap = chars + 1;
+
+        if (b -> len == 0)
+        {
+            b -> s[0] = 0;
+        }
     }
 }
 
@@ -781,6 +798,13 @@ const srcloc_t  *pp_linemap (const pp_t *p, size_t *nlines)
 {
     *nlines = p -> nmap;
     return (p -> map);
+}
+
+// An estimate of the output length (the input's length plus half again: macros and %define make it longer), so that the
+// output buffer is allocated once at about its final size
+void  pp_reserve_output (pp_t *p, size_t chars)
+{
+    buf_reserve_exact (&p -> out, chars);
 }
 
 // The output text, handed over: the caller frees it.  It is trimmed to its length plus 4 (the scanner's final newline and NULs),
