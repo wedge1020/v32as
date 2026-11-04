@@ -21,7 +21,7 @@
 #include <strings.h>
 #include <unistd.h>
 
-#define  VERSION      "20261101-dev"
+#define  VERSION      "20261104-dev"
 #define  BIOS_BASE    0x10000000u
 #define  CART_BASE    0x20000000u
 
