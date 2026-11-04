@@ -1,6 +1,8 @@
 # v32as preprocessor: design exploration
 
-Status: **Phases 1 and 2 implemented** (sections 9 and 10); the rest is proposal. Original exploration notes follow; it is based on reading `v32as` (flex/bison, ~3000 lines),
+Status: **Phases 1, 2 and 3 are implemented** (sections 9, 10 and 11, which describe what the program does now). Sections 1 to 8 are the original
+design exploration, kept as written: where they differ from sections 9 to 11 or from `README.md`, the latter are right (for example `%line n "file"` and
+`%for`, listed below, were never implemented; `-MD`/`-MF` and the other `-M` options were, see the README). The exploration is based on reading `v32as` (flex/bison, ~3000 lines),
 the stock `DevelopmentTools/Assembler/VirconASMPreprocessor.*`, and v32c++ `src/macro.c`.
 (No flex in the sandbox this was written in, so nothing was compiled or run.)
 
@@ -285,8 +287,7 @@ the run (not per file) and an unterminated `%push` at the end of the outermost f
 Limits: 64 nested expansions, 1,000,000 iterations per `%rep`, about 4.2 million replayed body lines per run
 (`MAX_WORK_LINES`), a `%rep` stops at its first iteration that reports an error.
 
-Not done: `%for`, `%local` (context-local `%define` is possible through `%$name`), `%rep` over a list, `-MD/-MF`
-dependency output, wrappers over the `IP`/`IR`/`IV` expansions (waiting for the result of `experiments/sysreg` on a
+Not done: `%for`, `%line`, `%local` (context-local `%define` is possible through `%$name`), `%rep` over a list, wrappers over the `IP`/`IR`/`IV` expansions (waiting for the result of `experiments/sysreg` on a
 real console/emulator before putting self-modifying code into a library).
 
 Tests: `tests/pp/macro_*.asm`, `rep_basic`, `ctx_control`, `lib_macros`, `str_directives`, `idefine_imacro`

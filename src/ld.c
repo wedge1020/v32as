@@ -19,7 +19,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define  VERSION      "20261101-dev"
+#define  VERSION      "20261104-dev"
 #define  BIOS_BASE    0x10000000u
 #define  CART_BASE    0x20000000u
 
@@ -380,7 +380,11 @@ static void  obuf_put (obuf_t *b, const void *data, size_t n)
         b -> p   = xrealloc (b -> p, b -> cap);
     }
 
-    memcpy (b -> p + b -> n, data, n);
+    if (n > 0)
+    {
+        memcpy (b -> p + b -> n, data, n);
+    }
+
     b -> n += n;
 }
 
@@ -710,7 +714,7 @@ static void  usage (FILE *fp)
         "                       address) or D (data address), as in 'v32as -r'\n"
         "  -R, --relocatable    do not link: join the objects into one object (-o FILE, default a.v32ob)\n"
         "                       that keeps the relocations and the externs still undefined\n"
-        "  -w, --no-warnings    do not warn about unused global symbols\n"
+        "  -w, --no-warnings    do not warn about an extern that no code uses\n"
         "  -h, --help           display this usage information and exit\n"
         "  -V, --version        display the version and exit\n"
         "\n"
@@ -1122,7 +1126,10 @@ int  main (int argc, char **argv)
         }
     }
 
-    qsort (g, ng, sizeof (gsym_t), gsym_cmp);
+    if (ng > 1)
+    {
+        qsort (g, ng, sizeof (gsym_t), gsym_cmp);
+    }
 
     for (k = 1; k < ng; k++)
     {
@@ -1422,7 +1429,10 @@ int  main (int argc, char **argv)
             }
         }
 
-        qsort (lab, nl, sizeof (label_t), label_cmp);
+        if (nl > 1)
+        {
+            qsort (lab, nl, sizeof (label_t), label_cmp);
+        }
 
         for (k = 0; k < nl; k++)
         {
@@ -1464,7 +1474,10 @@ int  main (int argc, char **argv)
             }
         }
 
-        qsort (lab, nl, sizeof (label_t), label_cmp);
+        if (nl > 1)
+        {
+            qsort (lab, nl, sizeof (label_t), label_cmp);
+        }
 
         sprintf (path, "%s.debug", output);
         fp = fopen (path, "w");

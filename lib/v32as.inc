@@ -3,7 +3,7 @@
 ;   %include "v32as.inc"          (put this directory on the path with -I lib)
 ;
 ; Every macro checks its operands with the %if tests, so a mistake is reported at the
-; line that made it:   INC 5   ->   error: INC: R? expects a register, got 5
+; line that made it:   INC 5   ->   error: INC: the first operand must be a register
 ; Macros that need a scratch register or the stack say so.
 ;
 ;   INC reg [, n]        reg += n        (n defaults to 1)

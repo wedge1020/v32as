@@ -2957,7 +2957,11 @@ static void  buf_put (buf_t *b, const void *data, size_t n)
         b -> p   = xrealloc (b -> p, b -> cap);
     }
 
-    memcpy (b -> p + b -> n, data, n);
+    if (n > 0)
+    {
+        memcpy (b -> p + b -> n, data, n);
+    }
+
     b -> n += n;
 }
 
@@ -3024,7 +3028,10 @@ int  asm_write_object (asm_t *a, FILE *fp)
     }
 
     // relocations: one per word that holds an address, in word order
-    qsort (a -> rel, a -> nrel, sizeof (rel_t), rel_cmp);
+    if (a -> nrel > 1)
+    {
+        qsort (a -> rel, a -> nrel, sizeof (rel_t), rel_cmp);
+    }
 
     for (i = 0; i < a -> nrel; i++)
     {

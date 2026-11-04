@@ -1,0 +1,184 @@
+.TH V32AS-CONTROL 3 "2026-11-04" "v32as 20261101-dev" "Vircon32 assembler manual"
+.SH NAME
+IF, ELSE, ENDIF, WHILE, ENDWHILE \- structured control flow macros for v32as (lib/control.inc)
+.SH SYNOPSIS
+.nf
+.B %include "control.inc"
+.sp
+.BI "IF " "reg"
+    ...
+.B ELSE
+    ...
+.B ENDIF
+.sp
+.BI "WHILE " "reg"
+    ...
+.B ENDWHILE
+.fi
+.SH DESCRIPTION
+.I lib/control.inc
+provides structured
+.B IF
+/
+.B ELSE
+/
+.B ENDIF
+and
+.B WHILE
+/
+.B ENDWHILE
+on top of the
+.B jf
+and
+.B jmp
+instructions.
+They are written with the extended preprocessor (contexts and private labels),
+so they cannot be used with
+.BR "v32as \-\-standard" .
+Use them with
+.B \-I lib
+and include the file:
+.PP
+.nf
+.RS
+v32as \-I lib game.asm
+.RE
+.fi
+.PP
+.nf
+.RS
+%include "control.inc"
+.RE
+.fi
+.PP
+The file starts with
+.BR %includeonce .
+Macro names are case\-sensitive: they are written in capitals.
+.PP
+The condition is a CPU register, and the test is only whether it is zero or not;
+a comparison has to be computed into a register first (for example with
+.BR ieq ,
+.BR ilt
+or
+.BR igt ).
+The macros open a
+.B %push
+context whose private labels
+.RB ( %$else ,
+.BR %$end ,
+.BR %$top )
+are different every time, so the constructs nest.
+The labels are named
+.BR __C\fIn\fP_else ,
+.B __C\fIn\fP_end
+and
+.BR __C\fIn\fP_top .
+.SH MACROS
+.TP
+.BI "IF " "reg"
+Run the following block when
+.I reg
+is not zero.
+Expands to
+.BI "jf " "reg" ", else-label" \fR.
+.TP
+.B ELSE
+Optional.
+Ends the block of the
+.B IF
+and starts the block that runs when the register was zero
+(a
+.B jmp
+to the end, then the else label).
+Only allowed after an
+.BR IF .
+.TP
+.B ENDIF
+Ends an
+.B IF
+or an
+.B IF
+\&...
+.BR ELSE .
+.TP
+.BI "WHILE " "reg"
+Repeat the following block as long as
+.I reg
+is not zero.
+The test is made before each pass; the block must change the register or leave
+the loop some other way.
+.TP
+.B ENDWHILE
+Ends a
+.BR WHILE :
+a
+.B jmp
+back to the test.
+.SH EXAMPLES
+.nf
+.RS
+%include "control.inc"
+    IF R1
+        mov R2, 1
+    ELSE
+        mov R2, 2
+    ENDIF
+    WHILE R3
+        isub R3, 1
+    ENDWHILE
+.RE
+.fi
+.PP
+expands (as shown by
+.BR "v32as \-E \-P" )
+to
+.PP
+.nf
+.RS
+    jf    R1, __C1_else
+        mov R2, 1
+    jmp   __C1_end
+__C1_else:
+        mov R2, 2
+__C1_end:
+__C2_top:
+    jf    R3, __C2_end
+        isub R3, 1
+    jmp   __C2_top
+__C2_end:
+.RE
+.fi
+.SH DIAGNOSTICS
+.TP
+.B IF: the condition must be a register
+The argument of
+.B IF
+is not a CPU register.
+.TP
+.B WHILE: the condition must be a register
+The argument of
+.B WHILE
+is not a CPU register.
+.TP
+.B ELSE without a matching IF
+.TP
+.B ENDIF without a matching IF
+.TP
+.B ENDWHILE without a matching WHILE
+A construct was closed that is not the innermost open one.
+.TP
+.B unterminated %push context
+An
+.B IF
+or
+.B WHILE
+was never closed before the end of the program.
+.PP
+Errors from inside a macro are reported at the line of the invocation, with a
+note naming the macro.
+A mismatched construct may also produce a follow\-on message from the macro's
+own label.
+.SH "SEE ALSO"
+.BR v32as (1),
+.BR v32as\-inc (3),
+.BR v32as\-language (7)

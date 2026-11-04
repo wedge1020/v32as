@@ -27,7 +27,7 @@ A label not named by either is local to its object (two objects may reuse a loca
 * a label cannot be both; `label +/- integer` works on externs (`mov R0, _table+2`, `pointer _t+1`);
 * outside `-C`, `global` is accepted (and checked), `extern` references simply stay undefined labels.
 
-In an object, labels are relative to the object (its first word is 0). `-b -c -O -g -r -T -n -E` are not
+In an object, labels are relative to the object (its first word is 0). `-b -c -O -g -r -T -n -E -B --symbols` and `--standard` are not
 allowed with `-C` (`--map FILE` is: it replaces the assembly file and line of the debug records by the C ones): the base address is the linker's job, and debug records travel inside the object.
 
 ## Object format (version 1; version 2 adds datasyms and function names; version 3 adds `;@var` ranges)
@@ -66,7 +66,7 @@ defined symbol, or the address of the global of that name for an `extern` one.
 | `--symbols FILE` | `0xADDRESS,name,kind` for every label of every object (kind `F` code, `D` data), sorted by address; local labels appear under the name the assembler gave them (`_f__loop`) |
 | `--entry SYMBOL` | the program starts at a global label: unless it is the first word of the first object, a two-word `jmp SYMBOL` is placed in front of everything (it appears in `-r`) |
 | `-L DIR`, `-l NAME` | archives `DIR/NAME.v32a`, else `DIR/libNAME.a` (`.` is always searched last) |
-| `--v32x --data WORDS` | write a V32X executable instead of a VBIN: 8 words (`0x58323356`, version 1, 8, text words, data words, entry offset, origin, 0) and then the image, byte for byte what `tools/v32x.py` makes from `v32as --origin`. The origin is the base, default `0x100000` (`WINDOW_BASE`; `-O` changes it, `-b`/`-c` and `-g vbin|v32` are refused). `--entry` is then a global label or a word offset into the image (default 0), goes into the header and adds no jump; it must lie inside the image |
+| `--v32x --data WORDS` | write a V32X executable instead of a VBIN: 8 words (`0x58323356`, version 1, 8, text words, data words, entry offset, origin, 0) and then the image, byte for byte what `v32as --origin ... --v32x --v32x-data N` makes from the joined source. The origin is the base, default `0x100000` (`WINDOW_BASE`; `-O` changes it, `-b`/`-c` and `-g vbin|v32` are refused). `--entry` is then a global label or a word offset into the image (default 0), goes into the header and adds no jump; it must lie inside the image |
 | `-A FILE` | make the archive FILE from the objects named, instead of linking |
 | `-w` | no warnings (an `extern` nobody uses is warned about) |
 

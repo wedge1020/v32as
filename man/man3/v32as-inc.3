@@ -1,0 +1,189 @@
+.TH V32AS-INC 3 "2026-11-04" "v32as 20261101-dev" "Vircon32 assembler manual"
+.SH NAME
+INC, DEC, ZERO, NEG, CLAMP, SWAP, PUSHALL, POPALL, WAIT_FRAMES \- helper macros for v32as (lib/v32as.inc)
+.SH SYNOPSIS
+.nf
+.B %include "v32as.inc"
+.sp
+.BI "INC " "reg" " [, " n "]"
+.BI "DEC " "reg" " [, " n "]"
+.BI "ZERO " "reg" ", ..."
+.BI "NEG " "reg"
+.BI "CLAMP " "reg" ", " lo ", " hi
+.BI "SWAP " "a" ", " b
+.BI "PUSHALL " "reg" ", ..."
+.BI "POPALL " "reg" ", ..."
+.BI "WAIT_FRAMES " "[n]"
+.fi
+.SH DESCRIPTION
+.I lib/v32as.inc
+is a library of small statement macros written with the
+.B v32as
+preprocessor (see
+.BR v32as\-language (7)).
+They need the extended preprocessor, so they cannot be used with
+.BR "v32as \-\-standard" .
+Put the library directory on the include path and include the file:
+.PP
+.nf
+.RS
+v32as \-I lib game.asm
+.RE
+.fi
+.PP
+and in the source
+.PP
+.nf
+.RS
+%include "v32as.inc"
+.RE
+.fi
+.PP
+The file starts with
+.BR %includeonce ,
+so including it twice is harmless.
+Every macro checks its operands with the
+.B %if
+tests, so a mistake is reported at the line that made it, followed by a note
+naming the macro, for example
+.PP
+.nf
+.RS
+game.asm:2: error: INC: the first operand must be a register
+game.asm:2: note: in expansion of macro 'INC' (defined at lib/v32as.inc:21)
+.RE
+.fi
+.PP
+A \(lqregister\(rq here means a CPU register (R0 to R15, or the aliases CR, SR,
+DR, BP, SP, in either case); the internal registers IP, IR and IV are not
+accepted.
+Macro names are case\-sensitive, so they are written in capitals.
+Each macro expands to ordinary instructions, so the usual rules about
+instruction operands apply (for instance, the immediate forms of the arithmetic
+instructions).
+.SH MACROS
+.TP
+.BI "INC " "reg" " [, " n "]"
+Add
+.I n
+to
+.IR reg ;
+.I n
+defaults to 1.
+Expands to
+.BI "iadd " "reg" ", " n \fR.
+.TP
+.BI "DEC " "reg" " [, " n "]"
+Subtract
+.I n
+from
+.IR reg ;
+.I n
+defaults to 1.
+Expands to
+.BI "isub " "reg" ", " n \fR.
+.TP
+.BI "ZERO " "reg" ", ..."
+Set each register listed to 0 (one
+.B "mov reg, 0"
+each).
+At least one register is needed; every operand must be a register.
+.TP
+.BI "NEG " "reg"
+Negate an integer register: expands to
+.BI "imul " "reg" ", \-1" \fR.
+.TP
+.BI "CLAMP " "reg" ", " lo ", " hi
+Keep an integer register between
+.I lo
+and
+.IR hi :
+expands to
+.B imax
+.IR reg ", " lo
+followed by
+.B imin
+.IR reg ", " hi .
+All three arguments are required.
+.TP
+.BI "SWAP " "a" ", " b
+Exchange two registers.
+It uses the stack (it expands to
+.B push a
+.B mov a, b
+.B pop b )
+and so needs the stack pointer set up.
+Swapping a register with a textually identical one expands to nothing.
+.TP
+.BI "PUSHALL " "reg" ", ..."
+Push each register, in the order given.
+.TP
+.BI "POPALL " "reg" ", ..."
+Pop the registers in reverse order, so that
+.B POPALL
+takes the same list as the matching
+.BR PUSHALL .
+.TP
+.BI "WAIT_FRAMES " "[n]"
+Wait
+.I n
+frames (default 1): expands to
+.I n
+.B wait
+instructions.
+.I n
+must be a constant expression the preprocessor can evaluate (it is the count of
+a
+.BR %rep ),
+not a register.
+.SH EXAMPLES
+.nf
+.RS
+%include "v32as.inc"
+_main:
+    INC     R0
+    INC     R1, 4
+    ZERO    R3, R4
+    CLAMP   R6, 0, 255
+    SWAP    R7, R8
+    PUSHALL R1, R2
+    POPALL  R1, R2
+    WAIT_FRAMES 2
+.RE
+.fi
+.PP
+expands (as shown by
+.BR "v32as \-E \-P" )
+to
+.PP
+.nf
+.RS
+_main:
+    iadd  R0, 1
+    iadd  R1, 4
+    mov   R3, 0
+    mov   R4, 0
+    imax  R6, 0
+    imin  R6, 255
+    push  R7
+    mov   R7, R8
+    pop   R8
+    push  R1
+    push  R2
+    pop   R2
+    pop   R1
+    wait
+    wait
+.RE
+.fi
+.SH DIAGNOSTICS
+An operand that is not a register is reported with
+.BR "INC: the first operand must be a register" ,
+.BR "ZERO: every operand must be a register" ,
+and so on, one message for each macro.
+A wrong number of arguments is reported by the preprocessor, for example
+.BR "macro 'SWAP' takes 2 arguments, but 1 given" .
+.SH "SEE ALSO"
+.BR v32as (1),
+.BR v32as\-control (3),
+.BR v32as\-language (7)

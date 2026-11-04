@@ -1,0 +1,352 @@
+.TH V32ASLD 1 "2026-11-04" "v32asld 20261101-dev" "Vircon32 assembler manual"
+.SH NAME
+v32asld \- linker and archiver for v32as relocatable objects
+.SH SYNOPSIS
+.B v32asld
+.RI [ options ]
+.IR OBJECT ...
+.br
+.B v32asld \-A
+.I ARCHIVE
+.IR OBJECT ...
+.br
+.B v32asld \-R
+.RB [ \-o
+.IR FILE ]
+.IR OBJECT ...
+.br
+.B v32asld \-\-v32x \-\-data
+.I WORDS
+.RI [ options ]
+.IR OBJECT ...
+.SH DESCRIPTION
+.B v32asld
+links relocatable objects made by
+.B v32as \-C
+(see
+.BR v32as (1))
+into a VBIN file.
+Linking is exactly equivalent to assembling the objects' sources one after the
+other as a single file at the chosen base address; the test suite checks this
+byte for byte.
+.PP
+Objects are placed in command line order, and the first word of the first
+object is the entry point (see
+.BR \-\-entry ).
+Symbols declared
+.B global
+in one object satisfy the
+.B extern
+references of the others.
+A label that is neither is local to its object, so two objects may use the same
+local name.
+The objects carry the debug records of the assembler, so
+.B \-g
+writes the same
+.I .debug
+file that
+.B v32as \-g
+writes for the sources joined together.
+.PP
+Archives (files starting with the magic
+.BR V32\-VARC ,
+made with
+.BR \-A )
+may be named as operands or found with
+.BR \-l .
+They are read after all plain objects: a member is linked in (appended, in the
+order found) only when it defines a global symbol that some selected object
+still lacks, and the scan repeats until nothing more is pulled in.
+.PP
+The object and archive formats are described in
+.I docs/OBJECT.md
+in the source distribution.
+.SH OPTIONS
+.TP
+.BR \-o ", " \-\-output =\fIFILE\fP
+Output file.
+The default is
+.I a.vbin
+(or
+.I a.v32ob
+with
+.BR \-R ).
+.TP
+.BR \-b ", " \-\-bios
+Link for the BIOS: addresses start at 0x10000000.
+.TP
+.BR \-c ", " \-\-cart
+Link for a cartridge: addresses start at 0x20000000.
+This is the default.
+.TP
+.BR \-O ", " \-\-origin " \fIADDR\fP"
+Link for any base address.
+.I ADDR
+is read as a C integer and must fit in 32 bits.
+.BR \-b ", " \-c " and " \-O
+are mutually exclusive.
+.TP
+.BR \-g ", " \-\-debug [= \fIMODE\fP]
+Also write
+.IR OUTPUT .debug
+as
+.B v32as \-g
+does.
+.I MODE
+is
+.B program
+(the default; absolute word addresses),
+.B vbin
+or
+.B v32
+(byte offsets in a .vbin or .v32 file); it may also be given as the next word.
+The labels written are every label of every object, local or global; the lines
+are those of the sources (or the C lines, when an object was made with
+.BR "v32as \-C \-\-map" ).
+If an object has
+.B ;@var
+records,
+.IR OUTPUT .vars
+is written as well, as
+.B v32as \-g
+would for the joined source.
+.TP
+.BI \-\-symbols= FILE
+Write
+.I 0xADDRESS,name,kind
+for every label of every object, sorted by address.
+.I kind
+is
+.B F
+(code follows) or
+.B D
+(data).
+Local labels appear under the name the assembler gave them (for example
+.BR _f__loop ).
+.TP
+.BR \-r ", " \-\-relocs =\fIFILE\fP , " \-\-emit\-relocs=" \fIFILE\fP
+Write
+.I index,0xVALUE[,kind]
+for every word that holds an address, in the format of
+.BR "v32as \-r" :
+the zero\-based word index into the image (not counting the 3\-word VBIN
+header), the value as linked, and, when any object declares a
+.BR datasym ,
+the kind
+.B C
+(code address) or
+.B D
+(data address) on every line.
+.TP
+.BI \-\-entry= SYMBOL
+The program starts at the global label
+.IR SYMBOL .
+Unless it is the first word of the first object, a two\-word
+.B jmp SYMBOL
+is placed in front of everything (it appears in the
+.B \-r
+file).
+It is an error if no object defines
+.IR SYMBOL .
+.TP
+.B \-\-v32x
+Write a V32X executable for v32nix instead of a VBIN: an 8\-word header
+(0x58323356, version 1, 8, text words, data words, entry offset, origin, 0)
+followed by the image, which is the same as what
+.B v32as \-\-origin
+makes.
+Needs
+.BR \-\-data .
+The base defaults to 0x100000 (the v32nix window base) and is the origin
+recorded in the header;
+.B \-O
+changes it, and
+.BR \-b ,
+.B \-c
+and
+.B "\-g vbin"
+or
+.B "\-g v32"
+are refused.
+With
+.B \-\-v32x ,
+.B \-\-entry
+is a global label or a word offset into the image (default 0) that goes into the
+header; no jump is added, and it must lie inside the image.
+.TP
+.BI \-\-data= WORDS
+With
+.BR \-\-v32x :
+the number of zeroed global\-variable words behind the image.
+It is an error without
+.BR \-\-v32x ,
+and
+.B \-\-v32x
+needs it.
+.TP
+.BI \-L " DIR"
+Add
+.I DIR
+to the directories searched by
+.BR \-l .
+May be repeated.
+.TP
+.BI \-l " NAME"
+Read the archive
+.IR DIR /\fINAME\fP.v32a
+or else
+.IR DIR /lib\fINAME\fP.a
+from the first of the
+.B \-L
+directories that has one; the current directory is always searched last.
+.TP
+.BR \-A ", " \-\-archive =\fIFILE\fP
+Do not link: make an archive
+.I FILE
+(format
+.BR V32\-VARC )
+of the objects given.
+.TP
+.BR \-R ", " \-\-relocatable
+Partial link: do not link, but join the objects into one object
+(default output
+.IR a.v32ob ).
+Globals stay global, an
+.B extern
+that another input defines becomes a reference to the definition, and the others
+stay
+.BR extern ;
+relocations, datasyms and debug records are kept, so linking the result is the
+same as linking the inputs.
+Archives and
+.B \-l
+work as in a full link.
+Cannot be combined with
+.BR \-b ,
+.BR \-c ,
+.BR \-O ,
+.BR \-g ,
+.BR \-r ,
+.BR \-\-symbols ,
+.B \-\-entry
+or
+.BR \-\-v32x .
+Note that
+.B \-r
+is the relocation list, not a relocatable link.
+.TP
+.BR \-w ", " \-\-no\-warnings
+Do not warn about an
+.B extern
+declaration that no code uses.
+.TP
+.BR \-h ", " \-\-help
+Print the usage text and exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.SH "EXIT STATUS"
+.TP
+.B 0
+Success.
+.TP
+.B 1
+A link error: an undefined symbol (reported once per symbol, as
+.B "undefined reference to `x' (first used in a.v32ob)" ),
+a global defined by two objects, an entry symbol that is not defined or lies
+outside the image.
+.TP
+.B 2
+A usage error, an unreadable or corrupt object or archive (not a v32as object,
+truncated, or an unsupported format version), a missing
+.B \-l
+library, or an output file that cannot be written.
+.SH ENVIRONMENT
+.B v32asld
+reads no environment variables.
+.SH FILES
+.TP
+.I a.vbin
+Default linked output.
+.TP
+.I a.v32ob
+Default output of
+.BR \-R .
+.TP
+.IR NAME .v32a ", " libNAME .a
+Archives searched for by
+.BR \-l .
+.SH EXAMPLES
+Two sources, assembled separately and linked:
+.PP
+.nf
+.RS
+v32as \-C a.asm
+v32as \-C b.asm \-o b.v32ob
+v32asld \-g \-r prog.rel \-\-symbols prog.sym \-o prog.vbin a.v32ob b.v32ob
+.RE
+.fi
+.PP
+Here
+.I a.asm
+has
+.B global _start
+and
+.BR "extern _helper" ,
+and
+.I b.asm
+has
+.BR "global _helper" .
+The result is identical to assembling the two sources joined into one.
+.PP
+Make an archive and link against it, by name and with
+.BR \-l :
+.PP
+.nf
+.RS
+v32asld \-A libb.a b.v32ob
+v32asld \-o prog.vbin a.v32ob libb.a
+v32asld \-o prog.vbin \-L libs \-l b a.v32ob
+.RE
+.fi
+.PP
+Start at a label that is not the first word (a
+.B jmp
+is put in front):
+.PP
+.nf
+.RS
+v32asld \-\-entry _helper \-o prog.vbin a.v32ob b.v32ob
+.RE
+.fi
+.PP
+Join two objects into one, then link it:
+.PP
+.nf
+.RS
+v32asld \-R \-o ab.v32ob a.v32ob b.v32ob
+v32asld \-o prog.vbin ab.v32ob
+.RE
+.fi
+.PP
+A V32X executable with 4 words of zeroed data, starting at
+.BR _helper :
+.PP
+.nf
+.RS
+v32asld \-\-v32x \-\-data 4 \-\-entry _helper \-o prog.v32x a.v32ob b.v32ob
+.RE
+.fi
+.SH DIAGNOSTICS
+Messages start with
+.BR v32asld: .
+Besides the errors above, a warning is given for an
+.B extern
+declaration that is never used (silenced by
+.BR \-w ).
+.SH "SEE ALSO"
+.BR v32as (1),
+.BR v32as\-language (7)
+.PP
+docs/OBJECT.md in the source distribution describes the object and archive
+formats.

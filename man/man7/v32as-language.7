@@ -1,0 +1,367 @@
+.TH V32AS-LANGUAGE 7 "2026-11-04" "v32as 20261101-dev" "Vircon32 assembler manual"
+.SH NAME
+v32as\-language \- summary of the assembly language and preprocessor accepted by v32as
+.SH DESCRIPTION
+This page summarises the language that
+.BR v32as (1)
+reads.
+It is a reminder, not a specification: the README, the preprocessor notes
+.RI ( docs/PREPROCESSOR.md )
+and the object format
+.RI ( docs/OBJECT.md )
+in the source distribution are the complete references.
+The instruction set itself is that of the Vircon32 console; the instructions,
+registers and I/O port names are those of the official assembler.
+.PP
+The language has two modes.
+The default (\(lqenhanced\(rq) accepts everything below.
+With
+.B \-\-standard
+every extension is off and only the official assembler's language is accepted;
+the differences are listed at the end.
+.SH SYNTAX
+.SS "Statements and comments"
+A statement is an instruction or a data directive, optionally preceded by one or
+more labels, and ends at the end of the line.
+A label and a statement may share a line.
+A comment starts with a semicolon and runs to the end of the line.
+Mnemonics, register names, directive names and I/O port names are
+case\-insensitive.
+.PP
+.nf
+.RS
+_loop:  iadd R0, 1        ; a label, an instruction, a comment
+        jt   R0, _loop
+.RE
+.fi
+.SS "Labels"
+A label starts with an underscore:
+.BR _name: .
+Labels may be used before they are defined.
+Wherever a label is accepted as a value,
+.I label+integer
+and
+.I label\-integer
+are too (not with
+.BR \-\-standard ).
+After a global label,
+.B .loop:
+defines a local label and
+.B .loop
+refers to it (it is the label
+.BR _draw__loop
+after
+.BR _draw: ).
+.SS "Registers and operands"
+The CPU registers are R0 to R15; CR, SR, DR, BP and SP are other names for R11
+to R15.
+Immediate values, registers, memory operands in square brackets
+.RB ( [R1] ", " [R1+4] ", " [_label] ),
+I/O port names (for example
+.BR TIM_CurrentDate ,
+.BR GPU_Command )
+and the port value names (for example
+.BR GPUCommand_ClearScreen )
+are written as in the official assembler.
+.PP
+The internal registers IP, IR and IV can be used with
+.BR MOV ,
+which expands to exactly one real instruction (not with
+.BR \-\-standard ):
+.PP
+.nf
+.RS
+MOV Rn, IP       address of the next instruction
+MOV Rn, IR       the encoding of the instruction being executed
+MOV IP, Rn       a jump
+MOV IR, Rn       overwrite the next instruction word
+MOV IV, Rn       overwrite the next instruction's immediate
+.RE
+.fi
+.PP
+.B "MOV Rn, IV"
+is rejected.
+The writes to IR and IV patch code at run time, so that code must run from RAM
+(the assembler warns).
+.SS "Numbers"
+.TP
+.B 42
+Decimal.
+.TP
+.B #42
+Decimal with a prefix (also
+.BR #\-3 ).
+.TP
+.BR 0xFF ", " FFh
+Hexadecimal (the
+.B h
+suffix form is an extension).
+.TP
+.B 0b1010
+Binary.
+.TP
+.B 0777
+A leading zero means octal (511), but decimal in the official assembler;
+.B v32as
+warns about every such literal.
+.TP
+.B 3.14
+A floating point number (32 bits).
+.TP
+.B \(aqA\(aq
+A character literal, an integer; it takes the same escapes as strings.
+.TP
+.BR true ", " false
+1 and 0.
+.PP
+Strings are in double quotes and take the escapes
+.BR \en ,
+.BR \er ,
+.BR \et ,
+.BR \e\e ,
+.BR \e\(aq ,
+.B \e"
+and
+.BR \exHH .
+.SS "Data directives"
+.TP
+.B integer, float, pointer
+A comma separated list, one word per element.
+.B pointer
+takes labels (also
+.IR label+N ).
+.TP
+.B string
+One word per character plus a terminating 0.
+.TP
+.B zstring
+Four characters per word, the first in the low byte, zero terminated, the last
+word zero padded.
+Not in the official assembler.
+.TP
+.B datafile \(dqpath\(dq
+Reads the file as little\-endian words.
+The file is looked up as an absolute path; in the directory of the file holding
+the directive; in each
+.B \-I
+directory; in the current directory.
+With
+.B \-\-standard
+the
+.B \-I
+directories are not searched.
+.TP
+.B global _a, _b
+.TP
+.B extern _a
+Objects (see
+.BR v32asld (1)):
+the label is defined here and visible to other objects, or defined in another
+object.
+Plain names without a percent sign; errors under
+.BR \-\-standard .
+.TP
+.B datasym _NAME
+Declares a name whose value is 0, so
+.I _NAME+17
+is a word holding 17 that the relocation file
+.RB ( "\-r" )
+marks
+.B D
+(a reference into the module's data).
+.SS "Debug comments"
+Comment lines of their own that start with
+.B ;@
+are read by
+.B \-g
+(not with
+.BR \-\-standard ):
+.TP
+.B ;@src FILE:LINE
+.TP
+.B ;@src \-
+Source position for the instructions that follow.
+.TP
+.B ;@var NAME loc=... type=...
+.TP
+.B ;@scope {
+.TP
+.B ;@scope }
+.TP
+.B ;@fn __function_NAME
+Local variables, their scopes, and the end of a function.
+.PP
+See
+.BR v32as (1)
+for the files they produce.
+.SH PREPROCESSOR
+A directive is a line whose first non\-blank character is
+.BR % .
+Directive names are case\-insensitive; macro names are not.
+Macros are replaced only in code, never inside strings, character literals,
+comments or numbers.
+.SS "In the official assembler"
+.nf
+.RS
+%define NAME tokens...     %undef NAME
+%ifdef NAME  %ifndef NAME  %else  %endif
+%include "file"            %error "message"   %warning "message"
+.RE
+.fi
+.PP
+.B %define
+is expanded where it is used.
+.B %include
+paths are relative to the including file; the nesting limit is 20.
+A skipped
+.B %ifdef
+block drops every line, including unknown directives.
+.SS "Extensions"
+.TP
+.B "%define F(a, b) ..."
+Function\-like macros, with
+.B #x
+(stringize),
+.B a ## b
+(join),
+.B ...
+and
+.BR __VA_ARGS__ .
+.TP
+.BR "%if %elif %elifdef %elifndef"
+Conditionals with an expression: 32\-bit integers and floats,
+.BR defined(NAME) ,
+C operators with C precedence, and the functions
+.BR int ,
+.BR float ,
+.BR abs ,
+.BR min ,
+.BR max ,
+.BR floor ,
+.B ceil
+and
+.BR round .
+.TP
+.BR "%assign NAME expr" ", " "%eval NAME expr"
+Compute a value now.
+.TP
+.B %eval(expr)
+Replaced anywhere in a line by the value of the expression.
+.TP
+.BR "%idefine %xdefine %ixdefine"
+Case\-insensitive define; define expanded now; both.
+.TP
+.B %include <name>
+Searches only the
+.B \-I
+directories.
+.B %include "name"
+tries the including file's directory first.
+.B %includeonce
+and
+.B "%pragma once"
+make later includes of the file no\-ops.
+.TP
+.BR "%macro %imacro %endmacro %unmacro"
+Statement macros with named parameters, defaults, a rest parameter, and
+.BR %0 ,
+.BR %1 ,
+.BR %* ;
+.B %exitmacro
+leaves one.
+.TP
+.BR "%rep %endrep %exitrep %@ %rotate"
+Loops (up to 1,000,000 iterations) and the iteration number.
+.TP
+.B %%name
+A label private to one macro expansion.
+.TP
+.BR "%ifreg %ifsysreg %ifnum %ifstr %iflabel %ifport %ifidn %ifidni %ifempty %ifmacro %ifctx"
+Operand tests, each also as
+.B %elif...
+and negated with
+.B n
+(for example
+.BR %ifnreg ).
+.TP
+.BR "%strlen %substr %strcat %defstr"
+String directives.
+.TP
+.BR "%push %pop %repl, %$x"
+Contexts and names private to a context.
+.TP
+.B "%pragma shadow"
+Allow a macro with the name of an instruction without a warning.
+.PP
+Predefined symbols are
+.BR __FILE__ ,
+.BR __LINE__ ,
+.BR __COUNTER__ ,
+.BR __INCLUDE_LEVEL__ ,
+.BR __V32AS__ ,
+.BR __BASE__ ,
+and one of
+.BR __BIOS__ ,
+.BR __CART__ ,
+.B __ORIGIN__
+or
+.BR __NONE__ .
+.PP
+Limits: 64 levels of macro expansion, about 4 million replayed lines per run, 20
+levels of
+.BR %include .
+.SH "ENHANCED SYNTAX AND \-\-STANDARD"
+Everything in the following list is an error, or does not exist, under
+.BR \-\-standard :
+.IP \(bu 2
+the number forms
+.BR 0b101 ,
+.BR FFh ,
+.B #42
+and
+.B 0X1F
+(a leading zero is then decimal);
+.IP \(bu 2
+the names IP, IR, IV and the directive
+.BR zstring ;
+.IP \(bu 2
+all preprocessor directives other than the official ones above, and they must be
+in lowercase; function\-like macros,
+.B .local
+labels and
+symbols such as
+.BR __FILE__ ;
+.IP \(bu 2
+a
+.B %define
+whose value contains its own name or a percent sign;
+.IP \(bu 2
+.B %include
+other than
+.BR \(dqfile\(dq ,
+and any use of
+.BR \-I
+for it;
+.IP \(bu 2
+.IR label+integer ,
+.BR global ,
+.BR extern ,
+.B datasym
+and the
+.B ;@
+comments as debug input (they are plain comments);
+.IP \(bu 2
+more than one input file.
+.PP
+Under
+.B \-\-standard
+an unterminated
+.B %if
+is only a warning.
+.SH "SEE ALSO"
+.BR v32as (1),
+.BR v32asld (1),
+.BR v32as\-inc (3),
+.BR v32as\-control (3)
+.PP
+README.md, docs/PREPROCESSOR.md and docs/OBJECT.md in the source distribution.

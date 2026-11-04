@@ -3,7 +3,12 @@
 #   make            build bin/v32as and bin/v32asld (the linker)
 #   make debug      build with -g and no optimization
 #   make test       run the regression tests (tests/run_tests.sh)
-#   make install    copy the tool into ~/bin
+#   make install    install v32as, v32asld, the macro libraries and the man pages
+#                   (default: ~/bin and ~/man; PREFIX=/usr/local gives the usual layout;
+#                   DESTDIR, PREFIX, BINDIR, MANDIR and LIBDIR are honoured)
+#   make uninstall  remove what install put there
+#   make sysinstall make install PREFIX=/usr/local
+#   make mancheck   lint the man pages (plain sh and awk)
 #   make archive    zip the sources (without build products) to ../v32as-project.zip
 #
 # Layout:  src/ sources   inc/ headers   docs/ design notes   tests/ regression tests
@@ -75,17 +80,50 @@ $(BUILD)/%.o: $(SRC)/%.c $(BUILD)/parser.tab.h $(HDRS) | $(BUILD)
 test: all
 	@sh tests/run_tests.sh bin/$(PROJ) bin/v32asld
 
+# Where install puts things.  Without PREFIX the tools go to ~/bin and the man pages to ~/man
+# (what man-db finds for a ~/bin in PATH); with PREFIX=/usr/local (or /usr, /opt/v32as ...) the
+# usual PREFIX/bin and PREFIX/share/man.  Each part can be set on its own; DESTDIR is for packaging.
+ifdef PREFIX
+  BINDIR ?= $(PREFIX)/bin
+  MANDIR ?= $(PREFIX)/share/man
+  LIBDIR ?= $(PREFIX)/share/v32as/lib
+else
+  BINDIR ?= $(HOME)/bin
+  MANDIR ?= $(HOME)/man
+  LIBDIR ?= $(HOME)/share/v32as/lib
+endif
+MANPAGES = $(wildcard man/man1/*.1 man/man3/*.3 man/man7/*.7)
+LIBFILES = $(wildcard lib/*.inc)
+ARCHIVE  ?= ../v32as-project.zip
+
 install: all
-	@mkdir -p /home/$(USER)/bin
-	@cp -av bin/$(PROJ) bin/v32asld /home/$(USER)/bin/
+	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(LIBDIR)
+	install -m 755 bin/$(PROJ) bin/v32asld $(DESTDIR)$(BINDIR)/
+	install -m 644 $(LIBFILES) $(DESTDIR)$(LIBDIR)/
+	@for f in $(MANPAGES); do \
+	    d=$(DESTDIR)$(MANDIR)/$$(basename $$(dirname $$f)); \
+	    install -d $$d && install -m 644 $$f $$d/ || exit 1; \
+	done
+	@echo "installed: $(DESTDIR)$(BINDIR)/$(PROJ), $(DESTDIR)$(BINDIR)/v32asld, man pages in $(DESTDIR)$(MANDIR), macro libraries in $(DESTDIR)$(LIBDIR)"
+
+uninstall:
+	rm -f $(DESTDIR)$(BINDIR)/$(PROJ) $(DESTDIR)$(BINDIR)/v32asld
+	rm -f $(addprefix $(DESTDIR)$(LIBDIR)/,$(notdir $(LIBFILES)))
+	@for f in $(MANPAGES); do \
+	    rm -f $(DESTDIR)$(MANDIR)/$$(basename $$(dirname $$f))/$$(basename $$f); \
+	done
 
 sysinstall: all
-	@cp -av bin/$(PROJ) bin/v32asld /usr/local/bin/
+	$(MAKE) install PREFIX=/usr/local
+
+# A simple lint of the man pages: structure and ASCII only (no groff needed)
+mancheck:
+	@sh tests/mancheck.sh $(MANPAGES)
 
 clean:
 	@rm -rvf $(BUILD) bin/$(PROJ) bin/v32asld .*.sw[op] *~ core ../v32as-project.zip *.zip *.patch
 
 archive: clean
-	@zip -r ../v32as-project.zip . -x '.git/*' 'build/*' 'bin/*'
+	@zip -r $(ARCHIVE) . -x '.git/*' 'build/*' 'bin/*'
 
-.PHONY: all debug test install clean archive
+.PHONY: all debug test install uninstall sysinstall mancheck clean archive

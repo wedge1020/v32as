@@ -734,7 +734,10 @@ const char  *pp_local_name (pp_t *p, const char *mangled)
     if (!p -> locals_sorted)
     {
         // entries are {mangled, display} pairs: sort by the first member
-        qsort (p -> locals, p -> nlocals, 2 * sizeof (char *), local_cmp);
+        if (p -> nlocals > 1)
+        {
+            qsort (p -> locals, p -> nlocals, 2 * sizeof (char *), local_cmp);
+        }
         p -> locals_sorted = 1;
     }
 
@@ -5413,7 +5416,6 @@ static unsigned  process_text (pp_t *p, const char *name, const char *text, size
     frame_t   *f      = frame_push (p, name);
     unsigned   before = p -> errors;
     size_t     pos    = 0;
-    int        k;
 
     f -> canon = realpath (name, NULL);
 
