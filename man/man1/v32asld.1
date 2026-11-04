@@ -109,7 +109,23 @@ records,
 .IR OUTPUT .vars
 is written as well, as
 .B v32as \-g
-would for the joined source.
+would for the joined source: a
+.B ;@var
+whose
+.B loc=
+is a label or
+.B label+N
+is written as
+.BI @0x ADDRESS
+with the label's final address, in the style of the
+.B \-g
+mode.
+If the objects were made from a source with
+.B ;@lang X
+(the first one found is used), both files start with the comment line
+.BR "# lang X" ;
+readers must skip lines that start with
+.BR # .
 .TP
 .BI \-\-symbols= FILE
 Write

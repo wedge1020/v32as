@@ -607,6 +607,11 @@ static void  collect_variable (void *ud, const char *name, const char *body)
     x -> n++;
 }
 
+static const char  *define_text (void *ud, const char *name)
+{
+    return (pp_define_text ((const pp_t *) ud, name));
+}
+
 static const char  *local_name (void *ud, const char *name)
 {
     return (pp_local_name ((pp_t *) ud, name));
@@ -1109,6 +1114,8 @@ int  main (int  argc, char **argv)
     a.src_markers  = !opt.standard;                 // ;@src comments are read except under --standard
     a.warn_markers = opt.warn_markers && !opt.standard;
     a.no_warn  = opt.no_warn;
+    a.define_of  = define_text;                     // ;@var loc=NAME with NAME a %define
+    a.define_ud  = pp;
     a.incdirs  = incdirs;
     a.nincdirs = nincdirs;
     a.listing  = !opt.binary;

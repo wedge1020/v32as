@@ -229,7 +229,7 @@ fail=$((fail + $(grep -c '^FAIL' "$T/va2out")))
 # ;@src markers: -g (and -C) take the entries from them; --map wins for the instructions it names
 ( cd markers
   "$BIN" --cart -B -g -o "$T/mk.vbin" bench.asm 2>/dev/null && cmp -s "$T/mk.vbin.debug" bench.debug && echo ok || echo "FAIL: ;@src -g entries"
-  "$BIN" --cart -B -g -o "$T/mk.vbin" bench.asm 2>/dev/null; cp "$T/mk.vbin.debug" "$T/mk1.debug"
+  "$BIN" --cart -B -g -o "$T/mk.vbin" bench.asm 2>/dev/null; tail -n +2 "$T/mk.vbin.debug" > "$T/mk1.debug"   # without the "# lang lua" line (--map has none)
   "$BIN" --cart -B -g --map bench.map -o "$T/mk.vbin" bench.asm 2>/dev/null && cmp -s "$T/mk.vbin.debug" "$T/mk1.debug" && echo ok || echo "FAIL: ;@src -g equals --map of the same lines"
   "$BIN" --cart -B -g --map bench_mapwins.map -o "$T/mk.vbin" bench.asm 2>/dev/null && cmp -s "$T/mk.vbin.debug" bench_mapwins.debug && echo ok || echo "FAIL: --map wins over ;@src"
   "$BIN" --cart -B -g vbin -o "$T/mk.vbin" bench.asm 2>/dev/null && cmp -s "$T/mk.vbin.debug" bench_vbin.debug && echo ok || echo "FAIL: ;@src with -g vbin"
@@ -295,5 +295,79 @@ fail=$((fail + $(grep -c '^FAIL' "$T/mkout")))
 grep '^FAIL' "$T/varsout"
 pass=$((pass + $(grep -c '^ok' "$T/varsout")))
 fail=$((fail + $(grep -c '^FAIL' "$T/varsout")))
+# ;@lang, symbol locations in .vars, functions ended by the next function's label (SA-1, SA-2, SA-4)
+( cd markers
+  # SA-1/SA-4: a C-style source (three functions, nested blocks, no ";@src -" and no ";@fn" after the bodies)
+  "$BIN" --cart -B -g -o "$T/cm.vbin" c_multi.asm 2>/dev/null && cmp -s "$T/cm.vbin.debug" c_multi.debug && cmp -s "$T/cm.vbin.vars" c_multi.vars \
+    && echo ok || echo "FAIL: c_multi .debug / .vars"
+  [ "$(head -1 c_multi.debug)" = "# lang c" ] && [ "$(head -1 c_multi.vars)" = "# lang c" ] && echo ok || echo "FAIL: # lang c is the first line of both files"
+  # the function ends at the next function's label; a ;@fn above a label is only a hint; an unclosed block ends there too
+  grep -q '^var,0x20000005,0x2000000D,argc,BP+2,int,-,0,main$' c_multi.vars && grep -q '^scope,0x2000000F,0x20000011,1,helper$' c_multi.vars \
+    && grep -q '^0x2000000D,t.c,10,helper$' c_multi.debug && echo ok || echo "FAIL: c_multi ranges end at the next function label"
+  # the same source under lua: the nested function keeps its parent open (unchanged), and "# lang lua" is the only difference
+  ( echo ';@lang lua'; cat vars.asm ) > "$T/vl.asm"
+  "$BIN" --cart -B -g -o "$T/vl.vbin" "$T/vl.asm" 2>/dev/null && ( echo '# lang lua'; cat vars.vars ) | cmp -s - "$T/vl.vbin.vars" \
+    && ( echo '# lang lua'; cat vars.debug ) | cmp -s - "$T/vl.vbin.debug" && echo ok || echo "FAIL: ;@lang lua changes more than the # lang line"
+  ( echo ';@lang Lua'; cat lua_dbg.asm ) > "$T/ld.asm"
+  "$BIN" --cart -B -g -o "$T/ld.vbin" "$T/ld.asm" 2>/dev/null && ( echo '# lang Lua'; cat lua_dbg.vars ) | cmp -s - "$T/ld.vbin.vars" \
+    && ( echo '# lang Lua'; cat lua_dbg.debug ) | cmp -s - "$T/ld.vbin.debug" && echo ok || echo "FAIL: ;@lang Lua (any case) is lua"
+  # any other language ends a function at the next function label: vars.asm's nested function no longer sits inside outer
+  ( echo ';@lang c'; cat vars.asm ) > "$T/vc.asm"
+  "$BIN" --cart -B -g -o "$T/vc.vbin" "$T/vc.asm" 2>/dev/null && grep -q '^var,0x20000002,0x20000012,p,BP+2,lua,-,0,outer$' "$T/vc.vbin.vars" && echo ok || echo "FAIL: ;@lang c ends outer at the label of inner"
+  # no ;@lang: no # line (the goldens of the earlier tests have none); a malformed or a second one
+  grep -q '^#' vars.vars lua_dbg.vars lua_dbg.debug && echo "FAIL: # line without ;@lang" || echo ok
+  ( echo ';@lang'; echo ';@lang c'; echo ';@lang lua'; cat c_multi.asm ) > "$T/lw.asm"
+  "$BIN" --cart -B -g -Wmarkers -o "$T/lw.vbin" "$T/lw.asm" 2>"$T/lw.err"; [ "$(grep -c 'warning' "$T/lw.err")" = 2 ] && cmp -s "$T/lw.vbin.vars" c_multi.vars && echo ok || echo "FAIL: malformed and repeated ;@lang"
+  # --standard: comments (no .vars, no # line); --map and plain -g: nothing changes
+  rm -f "$T/sc.vbin.vars"; "$BIN" --standard --cart -B -g -o "$T/sc.vbin" c_multi.asm 2>/dev/null; [ ! -e "$T/sc.vbin.vars" ] && ! grep -q '^#' "$T/sc.vbin.debug" && echo ok || echo "FAIL: --standard and ;@lang"
+  # (bench.asm has a ;@lang lua)
+  "$BIN" --cart -B -g --map bench_mapwins.map -o "$T/bl.vbin" bench.asm 2>/dev/null && cmp -s "$T/bl.vbin.debug" bench_mapwins.debug && echo ok || echo "FAIL: --map and ;@lang"
+  "$BIN" -C --map bench_mapwins.map -o "$T/bl.v32ob" bench.asm 2>/dev/null && "$LD" -c -g -o "$T/bl2.vbin" "$T/bl.v32ob" 2>/dev/null && cmp -s "$T/bl2.vbin.debug" bench_mapwins.debug && echo ok || echo "FAIL: -C --map and ;@lang"
+  ( echo ';@lang c'; grep -v '^[[:space:]]*;@src' bench.asm ) > "$T/pl.asm"
+  "$BIN" --cart -B -g -o "$T/pl.vbin" "$T/pl.asm" 2>/dev/null && ! grep -q '^#' "$T/pl.vbin.debug" && echo ok || echo "FAIL: plain -g and ;@lang"
+  # ;@var lines without any ;@src: .vars has the line, the plain .debug has not
+  grep -v '^[[:space:]]*;@src' c_multi.asm > "$T/ns.asm"
+  "$BIN" --cart -B -g -o "$T/ns.vbin" "$T/ns.asm" 2>/dev/null && [ "$(head -1 "$T/ns.vbin.vars")" = "# lang c" ] && ! grep -q '^#' "$T/ns.vbin.debug" && echo ok || echo "FAIL: ;@lang with ;@var and no ;@src"
+  "$BIN" -C -o "$T/ns.v32ob" "$T/ns.asm" 2>/dev/null && "$LD" -c -g -o "$T/ns2.vbin" "$T/ns.v32ob" 2>/dev/null && cmp -s "$T/ns2.vbin.vars" "$T/ns.vbin.vars" \
+    && cmp -s "$T/ns2.vbin.debug" "$T/ns.vbin.debug" && echo ok || echo "FAIL: -C: ;@lang with ;@var and no ;@src"
+  # SA-2: symbol locations
+  "$BIN" --cart -B -g -o "$T/cs.vbin" c_syms.asm 2>/dev/null && cmp -s "$T/cs.vbin.vars" c_syms.vars && echo ok || echo "FAIL: c_syms.vars"
+  "$BIN" --cart -B -g vbin -o "$T/cs.vbin" c_syms.asm 2>/dev/null && cmp -s "$T/cs.vbin.vars" c_syms_vbin.vars && echo ok || echo "FAIL: c_syms.vars in -g vbin mode"
+  [ "$("$BIN" --cart -B -g -Wmarkers -o "$T/cs.vbin" c_syms.asm 2>&1 | grep -c 'warning')" = 2 ] && echo ok || echo "FAIL: -Wmarkers on an unresolvable loc="
+  [ "$("$BIN" --cart -B -g -o "$T/cs.vbin" c_syms.asm 2>&1 | grep -c 'warning')" = 0 ] && echo ok || echo "FAIL: an unresolvable loc= warns without -Wmarkers"
+  [ "$("$BIN" --cart -B -g -Wmarkers -o "$T/cm.vbin" c_multi.asm 2>&1 | grep -c 'warning')" = 0 ] && echo ok || echo "FAIL: c_multi warns"
+  grep -q '^var,.*,d,@0x00000078,' c_syms.vars && grep -q ',a,@0x20000007,' c_syms.vars && grep -q ',b,@0x20000009,' c_syms.vars \
+    && grep -q ',j,BP-3,' c_syms.vars && grep -q ',k,R5,' c_syms.vars && grep -q ',l,@0x20003000,' c_syms.vars && grep -q ',m,-,' c_syms.vars \
+    && grep -q ',n,_nowhere,' c_syms.vars && echo ok || echo "FAIL: c_syms.vars content"
+  "$BIN" --standard --cart -B -g -o "$T/sc.vbin" c_syms.asm 2>/dev/null; [ ! -e "$T/sc.vbin.vars" ] && echo ok || echo "FAIL: --standard writes .vars (c_syms)"
+  # -C: the objects carry the text (a %define'd number is resolved by the assembler, a label by the linker); the result is the same file
+  for m in program vbin v32; do
+    for n in c_multi c_syms; do
+      "$BIN" --cart -B -g $m -o "$T/e1.vbin" $n.asm 2>/dev/null; "$BIN" -C -o "$T/e.v32ob" $n.asm 2>/dev/null \
+        && "$LD" -c -g $m -o "$T/e2.vbin" "$T/e.v32ob" 2>/dev/null && cmp -s "$T/e1.vbin.vars" "$T/e2.vbin.vars" && cmp -s "$T/e1.vbin.debug" "$T/e2.vbin.debug" \
+        && "$LD" -R -o "$T/er.v32ob" "$T/e.v32ob" 2>/dev/null && "$LD" -c -g $m -o "$T/e3.vbin" "$T/er.v32ob" 2>/dev/null \
+        && cmp -s "$T/e1.vbin.vars" "$T/e3.vbin.vars" && cmp -s "$T/e1.vbin.debug" "$T/e3.vbin.debug" && echo ok || echo "FAIL: $n -C + v32asld -g $m equals v32as -g $m"
+    done
+  done
+  "$BIN" -C -o "$T/e.v32ob" c_multi.asm 2>/dev/null; [ "$(od -An -tx4 -j8 -N4 "$T/e.v32ob" | tr -d ' ')" = 00000004 ] && echo ok || echo "FAIL: object version 4 with ;@lang"
+  # two C files: a label of the other file, a local label, a %define: linking equals the joined source, also partially linked
+  cat c_a.asm c_b.asm > "$T/ab.asm"
+  "$BIN" --cart -B -g -o "$T/ab.vbin" "$T/ab.asm" 2>/dev/null && cmp -s "$T/ab.vbin.vars" c_ab.vars && cmp -s "$T/ab.vbin.debug" c_ab.debug && echo ok || echo "FAIL: c_ab goldens"
+  "$BIN" -C -o "$T/ca.v32ob" c_a.asm 2>/dev/null && "$BIN" -C -o "$T/cb.v32ob" c_b.asm 2>/dev/null && "$LD" -c -g -o "$T/ab2.vbin" "$T/ca.v32ob" "$T/cb.v32ob" 2>/dev/null \
+    && cmp -s "$T/ab2.vbin.vars" c_ab.vars && cmp -s "$T/ab2.vbin.debug" c_ab.debug && echo ok || echo "FAIL: c_a + c_b linked == joined"
+  "$LD" -R -o "$T/cab.v32ob" "$T/ca.v32ob" "$T/cb.v32ob" 2>/dev/null && "$LD" -c -g -o "$T/ab3.vbin" "$T/cab.v32ob" 2>/dev/null \
+    && cmp -s "$T/ab3.vbin.vars" c_ab.vars && cmp -s "$T/ab3.vbin.debug" c_ab.debug && echo ok || echo "FAIL: c_a + c_b partially linked"
+  "$LD" -c -g -o "$T/ab4.vbin" "$T/cb.v32ob" "$T/ca.v32ob" 2>/dev/null; [ "$(head -1 "$T/ab4.vbin.vars")" = "# lang c" ] && echo ok || echo "FAIL: link order and # lang"
+  # objects of the earlier versions (made by the previous release) are still read; a version 3 object's label locs are resolved too
+  # (the objects are kept as octal escapes of their bytes: printf "$(cat F.oct)" rebuilds them)
+  for f in old_v3_1 old_v3_2 old_v2; do printf "$(cat $f.oct)" > "$T/$f.v32ob"; done
+  "$LD" -c -g -o "$T/ov.vbin" "$T/old_v3_1.v32ob" "$T/old_v3_2.v32ob" 2>/dev/null && cmp -s "$T/ov.vbin.vars" vl12.vars && cmp -s "$T/ov.vbin.debug" vl12.debug && echo ok || echo "FAIL: version 3 objects"
+  "$LD" -c -g -o "$T/ov2.vbin" "$T/old_v2.v32ob" 2>/dev/null && ! grep -q '^#' "$T/ov2.vbin.debug" && echo ok || echo "FAIL: version 2 object"
+  # an object without ;@lang is not a version 4 one
+  [ "$(od -An -tx4 -j8 -N4 "$T/old_v3_1.v32ob" | tr -d ' ')" = 00000003 ] && "$BIN" -C -o "$T/nl.v32ob" vl1.asm 2>/dev/null && [ "$(od -An -tx4 -j8 -N4 "$T/nl.v32ob" | tr -d ' ')" = 00000003 ] && cmp -s "$T/nl.v32ob" "$T/old_v3_1.v32ob" && echo ok || echo "FAIL: no ;@lang, same object as before"
+) > "$T/langout" 2>&1
+grep '^FAIL' "$T/langout"
+pass=$((pass + $(grep -c '^ok' "$T/langout")))
+fail=$((fail + $(grep -c '^FAIL' "$T/langout")))
 echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

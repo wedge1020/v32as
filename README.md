@@ -156,7 +156,16 @@ as the comments they are; the file name in the marker is what is written.
   `;@fn __function_NAME ...` that the Lua compiler writes after its body, at a `;@src -`, or at the end of the program. Functions nest (a Lua
   closure's body sits inside its parent's code, and the parent's code after it is the parent's again), and code between functions or after
   `;@src -` (global initialisation, the runtime) has no function. A `;@fn` written *above* a label (the runtime's `clobbers=` form) is not an
-  end. `__function_NAME_return:` is not a function.
+  end, for any language. `__function_NAME_return:` is not a function.
+- **`;@lang X`** (a comment line of its own, before the first function; the first one counts, later ones are ignored): the language of the
+  producer, `c` for `v32cc`, `lua` for `v32lua`. Two things depend on it. (1) With any language **other than `lua`** (compared without regard
+  to case) functions do not nest, so **the next top-level `__function_NAME:` label ends the previous function**: its `;@var` ranges and
+  blocks (closed or not) end at that label's address, exactly where the FUNCTION column changes, and no `;@src -` or `;@fn` is needed after
+  the body. Without a `;@lang`, or with `lua`, nothing changes. (2) The language is recorded in the side files, see below.
+- **`# lang X`**: when the source has `;@lang X` (and `--map` is not given), the **first line of `OUTPUT.debug`** is the comment
+  `# lang X` (in marker mode only: with `-g` entries from `;@src` markers; a plain `-g` file and a `--map` file are unchanged) and the
+  first line of `OUTPUT.vars` (when it is written) is the same comment. **Readers must skip every line that starts with `#`.** Without a
+  `;@lang` there is no such line; under `--standard` markers are comments, so there is none either.
 - **`--map FILE` still works**: for an instruction the map names, the map's entry is written; every other marker still gets its own. `v32cc`
   writes no markers today, so its output does not change.
 - **`-C`**: the object stores the marker entries in place of the assembly lines (object format version 2; function word `0xFFFFFFFE` means "no
@@ -175,7 +184,8 @@ scope,START,END,DEPTH[,FUNCTION]
 var,START,END,NAME,LOC,TYPE,FLAGS,DEPTH[,FUNCTION]
 ```
 
-`LOC` is the `loc=` as written (`BP-3`, `BP+2`, `R5`, `@0x20003000`, a symbol; `-` for `optimized-out`), `TYPE` the `type=` (`-`
+`LOC` is the `loc=` as written (`BP-3`, `BP+2`, `R5`, `@0x20003000`; `-` for `optimized-out`), except that a **symbol is resolved**: see
+below. `TYPE` the `type=` (`-`
 if none), `FLAGS` the bare words after it (`boxed`, `optimized-out`, joined by `+`; `-` if none; `key=value` words other than
 `loc`/`type` are ignored). `DEPTH` is 0 for the function's own scope and 1, 2, ... for blocks in it, so the sim can pick the
 innermost of two variables with the same name. The scope lines are the `;@scope {` ... `}` blocks.
@@ -185,8 +195,17 @@ innermost of two variables with the same name. The scope lines are the `;@scope 
   e.g. the optimizer's `loc=R5`, or `;@var NAME optimized-out`). A same-name `;@var` in a *nested* block shadows and does not end
   the outer one. Empty ranges (`do end`) are left out. An unbalanced `;@scope }` is ignored and an open block is closed with its
   function (both warn under `-Wmarkers`).
-- **Multi-file (`-C`).** The object stores the records (object format version 3, see `docs/OBJECT.md`) and `v32asld -g` writes
-  `OUTPUT.vars` as `v32as -g` would for the joined source; `v32asld -R` keeps them. Tested with two files, one function each.
+- **Symbol locations.** A `loc=SYMBOL` where SYMBOL is a label, `label+N` / `label-N` (N decimal or `0x...`), or a name `%define`d as a
+  number or as one of those (v32lua's `%define var_NAME 0x78`; the replacement text must be just that, no other expression) is written in
+  the LOC column as `@0xADDRESS` when it is known at the end of the assembly. A label gives its address in the style of the START and END
+  columns of the `-g` mode (absolute for `-g`, the file offset for `-g vbin` / `-g v32`); a `%define`d number is a plain value (a RAM
+  address) and is written as it is, whatever the mode. Registers (`BP-3`, `BP+2`, `R5`, ...), `@0x...` and `-` are left as written, as is a
+  symbol that is not known (it also warns under `-Wmarkers`). The `%define`s in force at the end of the file count.
+- **Multi-file (`-C`).** The object stores the records (object format version 3, or 4 with a `;@lang`, see `docs/OBJECT.md`) and `v32asld -g`
+  writes `OUTPUT.vars` and `OUTPUT.debug` as `v32as -g` would for the joined source; `v32asld -R` keeps them. A `%define`d number is
+  resolved when assembling; a label (of the object, or a global one of another object) is resolved by `v32asld` with its final address, in the
+  `-g` mode given to the linker. Several objects: the first `;@lang` found is the one written. Tested with two files, one function each,
+  and with C-style files.
 - `--standard`: the `;@` lines are comments; no `.vars`.
 
 Example (`m.asm` has the lines `;@src prog.lua:1`, `__function_main:`, `;@scope {`, `;@var x loc=BP-1 type=int`, two `mov` instructions, `;@scope }`,
@@ -223,7 +242,8 @@ column, `,C` or `,D`, as `v32as -r` does. A datasym has the value 0 in every obj
 ### v32asld options
 
 - `-o, --output FILE` (default `a.vbin`; `a.v32ob` with `-R`); `-b, --bios`, `-c, --cart` (default), `-O, --origin ADDR`.
-- `-g, --debug[=MODE]` writes `OUTPUT.debug` (and `OUTPUT.vars` when the objects have `;@var` records); `-r, --relocs FILE` (also `--emit-relocs FILE`)
+- `-g, --debug[=MODE]` writes `OUTPUT.debug` (and `OUTPUT.vars` when the objects have `;@var` records; both start with `# lang X` when
+  the objects were made from a source with `;@lang X`, and the symbol locations of `;@var` are resolved); `-r, --relocs FILE` (also `--emit-relocs FILE`)
   the relocation list (format above); `--symbols FILE` the label table.
 - `-A, --archive FILE` makes an archive (`V32-VARC`) of the objects given, instead of linking. Archives given as operands or with
   `-L DIR -l NAME` (`DIR/NAME.v32a`, else `DIR/libNAME.a`; `.` is always searched last) are mined after the objects, a member being linked

@@ -11,15 +11,17 @@
 //
 ////////////////////////////////////////////////////////////////////////////////////////
 
+#include <ctype.h>
 #include <errno.h>
 #include <getopt.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 
-#define  VERSION      "20261104-dev"
+#define  VERSION      "20261101-dev"
 #define  BIOS_BASE    0x10000000u
 #define  CART_BASE    0x20000000u
 
@@ -63,6 +65,7 @@ typedef struct
     uint32_t        version, dbgsz;     // dbgsz: bytes per debug record (12; 16 in version 2: + function name)
     uint32_t        nwords, nsyms, nrels, ndbg, strsize;
     uint32_t        nvars;          // version 3: ;@var / ;@scope records (9 words each, after the string table)
+    uint32_t        langoff, langflags;     // version 4: the ;@lang (a string offset or NO_STRING); flags 1: FILE.debug, 2: FILE.vars
     const unsigned char  *words, *syms, *rels, *dbg, *vars;
     const char     *str;
     uint32_t        start;          // word offset of this object in the output
@@ -129,7 +132,7 @@ static int  parse_object (object_t *o, const char *path, unsigned char *buf, siz
         return (-1);
     }
 
-    if (get32 (buf + 8) < 1 || get32 (buf + 8) > 3)
+    if (get32 (buf + 8) < 1 || get32 (buf + 8) > 4)
     {
         fprintf (stderr, "v32asld: %s: unsupported object format version %u\n", path, get32 (buf + 8));
         return (-1);
@@ -150,8 +153,25 @@ static int  parse_object (object_t *o, const char *path, unsigned char *buf, siz
 
     o -> nvars = 0;
     o -> vars  = NULL;
+    o -> langoff = NO_STRING;
+    o -> langflags = 0;
 
-    if (o -> version == 3)
+    if (o -> version == 4)
+    {
+        // after the string table: the ;@lang (string offset), its flags, then as in version 3
+        if (size < need + 12)
+        {
+            fprintf (stderr, "v32asld: %s: corrupt object (size does not match its header)\n", path);
+            return (-1);
+        }
+
+        o -> langoff   = get32 (buf + need);
+        o -> langflags = get32 (buf + need + 4);
+        o -> nvars     = get32 (buf + need + 8);
+        o -> vars      = buf + need + 12;
+        need          += 12 + 36 * (size_t) o -> nvars;
+    }
+    else if (o -> version == 3)
     {
         // after the string table: the number of ;@var / ;@scope records, then 9 words each
         if (size < need + 4)
@@ -180,6 +200,12 @@ static int  parse_object (object_t *o, const char *path, unsigned char *buf, siz
     if (o -> strsize == 0 || o -> str[o -> strsize - 1] != 0)
     {
         fprintf (stderr, "v32asld: %s: corrupt object (string table)\n", path);
+        return (-1);
+    }
+
+    if (o -> langoff != NO_STRING && o -> langoff >= o -> strsize)
+    {
+        fprintf (stderr, "v32asld: %s: corrupt object (language name)\n", path);
         return (-1);
     }
 
@@ -306,6 +332,140 @@ static osym_t  osym (const object_t *o, uint32_t i)
 static const char  *ostr (const object_t *o, uint32_t off)
 {
     return (off < o -> strsize ? o -> str + off : "?");
+}
+
+// ;@lang of the objects: the first one's, and whether FILE.debug (1) / FILE.vars (2) get "# lang X"
+static const char  *objects_lang (const object_t *obj, int nobj, uint32_t *flags)
+{
+    const char  *lang = NULL;
+    int          i;
+
+    *flags = 0;
+
+    for (i = 0; i < nobj; i++)
+    {
+        if (obj[i].langoff != NO_STRING && obj[i].langflags != 0)
+        {
+            lang    = lang != NULL ? lang : ostr (&obj[i], obj[i].langoff);
+            *flags |= obj[i].langflags;
+        }
+    }
+
+    return (lang);
+}
+
+static int  loc_number (const char *p, long long *v)
+{
+    int        hex = 0;
+    long long  x = 0;
+    size_t     n = 0;
+
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X'))  { hex = 1; p += 2; }
+
+    for (; *p; p++, n++)
+    {
+        int  d;
+
+        if (*p >= '0' && *p <= '9')                { d = *p - '0'; }
+        else if (hex && *p >= 'a' && *p <= 'f')    { d = *p - 'a' + 10; }
+        else if (hex && *p >= 'A' && *p <= 'F')    { d = *p - 'A' + 10; }
+        else                                       { return (0); }
+
+        x = x * (hex ? 16 : 10) + d;
+
+        if (x > 0xFFFFFFFFll)  { return (0); }
+    }
+
+    *v = x;
+
+    return (n > 0);
+}
+
+static int  is_register (const char *id)
+{
+    static const char *const  names[] = { "CR", "SR", "DR", "BP", "SP" };
+    size_t                    i;
+
+    if ((id[0] == 'R' || id[0] == 'r') && id[1] >= '0' && id[1] <= '9'
+        && (id[2] == 0 || (id[2] >= '0' && id[2] <= '9' && id[3] == 0)))
+    {
+        return (atoi (id + 1) <= 15);
+    }
+
+    for (i = 0; i < sizeof (names) / sizeof (names[0]); i++)
+    {
+        if (strcasecmp (id, names[i]) == 0)  { return (1); }
+    }
+
+    return (0);
+}
+
+// The loc= of a ;@var record of object o, as FILE.vars writes it: "label" or "label+N" (not a register) is the label's address as
+// @0xADDRESS (a label of o first, then a global one; in the style of the START column of the -g mode); anything else, or
+// an unknown label, as the object has it. 'buf' holds the result when it is not 'loc'.
+static const char  *resolve_loc (const object_t *obj, int nobj, const object_t *o, const char *loc, uint32_t base, dbgmode_t dmode,
+                                 char *buf, size_t n)
+{
+    char       id[128];
+    size_t     len = 0;
+    long long  add = 0;
+    const char *p = loc;
+    int        pass, i;
+
+    if (!(isalpha ((unsigned char) *p) || *p == '_'))
+    {
+        return (loc);
+    }
+
+    while ((isalnum ((unsigned char) *p) || *p == '_') && len + 1 < sizeof (id))
+    {
+        id[len++] = *p++;
+    }
+
+    id[len] = 0;
+
+    if (*p == '+' || *p == '-')
+    {
+        if (!loc_number (p + 1, &add))  { return (loc); }
+        if (*p == '-')  { add = -add; }
+    }
+    else if (*p != 0)
+    {
+        return (loc);
+    }
+
+    if (is_register (id))
+    {
+        return (loc);
+    }
+
+    for (pass = 0; pass < 2; pass++)
+    {
+        for (i = 0; i < nobj; i++)
+        {
+            uint32_t  k;
+
+            if ((pass == 0) != (&obj[i] == o))  { continue; }
+
+            for (k = 0; k < obj[i].nsyms; k++)
+            {
+                osym_t  s = osym (&obj[i], k);
+
+                if (!(s.flags & SYM_DEFINED) || (s.flags & SYM_DATASYM) || strcmp (s.name, id) != 0)  { continue; }
+                if (pass == 1 && !(s.flags & SYM_GLOBAL))  { continue; }
+
+                {
+                    uint32_t  w = obj[i].start + s.value + (uint32_t) add;
+
+                    snprintf (buf, n, "@0x%08X", dmode == DBG_PROGRAM ? base + w
+                                                                      : (dmode == DBG_V32 ? 0x8Cu : 0x0Cu) + w * 4);
+                    return (buf);
+                }
+            }
+        }
+    }
+
+    return (loc);
 }
 
 static int  gsym_cmp (const void *x, const void *y)
@@ -458,6 +618,8 @@ static int  partial_link (object_t *obj, int nobj, const char *output)
     strtab_t    st;
     uint32_t    nrels = 0, ndbg = 0;
     int         v2 = 0, pass, has_vars = 0;
+    uint32_t    lflags = 0;
+    const char *lang = objects_lang (obj, nobj, &lflags);
     FILE       *fp;
 
     memset (&st, 0, sizeof (st));
@@ -662,8 +824,27 @@ static int  partial_link (object_t *obj, int nobj, const char *output)
         has_vars = nv > 0;
     }
 
+    // version 4: the ;@lang in front of the records (the first object's; both flags of all)
+    if (lang != NULL)
+    {
+        obuf_t  t4 = { 0 };
+
+        obuf_u32 (&t4, strtab_add (&st, lang));
+        obuf_u32 (&t4, lflags);
+
+        if (tr.n == 0)
+        {
+            obuf_u32 (&t4, 0);
+        }
+
+        obuf_put (&t4, tr.p, tr.n);
+        free (tr.p);
+        tr = t4;
+        v2 = 1;
+    }
+
     obuf_put (&out, "V32-VOBJ", 8);
-    obuf_u32 (&out, has_vars ? 3 : (v2 ? 2 : 1));
+    obuf_u32 (&out, lang != NULL ? 4 : (has_vars ? 3 : (v2 ? 2 : 1)));
     obuf_u32 (&out, (uint32_t) total);
     obuf_u32 (&out, (uint32_t) nns);
     obuf_u32 (&out, nrels);
@@ -1450,6 +1631,8 @@ int  main (int argc, char **argv)
         char     *path = xrealloc (NULL, strlen (output) + 8);
         uint32_t  base_off = (dmode == DBG_V32) ? 0x8C : (dmode == DBG_VBIN ? 0x0C : 0);
         uint32_t  unit     = (dmode == DBG_PROGRAM) ? 1 : 4;
+        uint32_t  lflags = 0;
+        const char  *lang;
 
         for (i = 0; i < nobj; i++)
         {
@@ -1486,6 +1669,13 @@ int  main (int argc, char **argv)
         {
             fprintf (stderr, "v32asld: cannot write '%s': %s\n", path, strerror (errno));
             return (2);
+        }
+
+        lang = objects_lang (obj, (int) nobj, &lflags);
+
+        if (lang != NULL && (lflags & 1))
+        {
+            fprintf (fp, "# lang %s\n", lang);
         }
 
         for (i = 0; i < nobj; i++)
@@ -1551,6 +1741,11 @@ int  main (int argc, char **argv)
             }
             else
             {
+                if (lang != NULL && (lflags & 2))
+                {
+                    fprintf (fp, "# lang %s\n", lang);
+                }
+
                 for (i = 0; i < nobj; i++)
                 {
                     for (k = 0; k < obj[i].nvars; k++)
@@ -1560,6 +1755,8 @@ int  main (int argc, char **argv)
                         uint32_t              fno = get32 (p + 32);
                         const char           *tp = get32 (p + 20) == NO_STRING ? "-" : ostr (&obj[i], get32 (p + 20));
                         const char           *fl = get32 (p + 24) == NO_STRING ? "-" : ostr (&obj[i], get32 (p + 24));
+                        char                  lbuf[160];
+                        const char           *lc = get32 (p + 16) == NO_STRING ? "-" : ostr (&obj[i], get32 (p + 16));
 
                         if (get32 (p) == 0)
                         {
@@ -1570,7 +1767,7 @@ int  main (int argc, char **argv)
                         {
                             fprintf (fp, "var,0x%08X,0x%08X,%s,%s,%s,%s,%u", dmode == DBG_PROGRAM ? base + ws : base_off + ws * unit,
                                      dmode == DBG_PROGRAM ? base + we : base_off + we * unit, ostr (&obj[i], get32 (p + 12)),
-                                     ostr (&obj[i], get32 (p + 16)), tp, fl, get32 (p + 28));
+                                     resolve_loc (obj, (int) nobj, &obj[i], lc, base, dmode, lbuf, sizeof (lbuf)), tp, fl, get32 (p + 28));
                         }
 
                         if (fno != NO_STRING)

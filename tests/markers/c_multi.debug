@@ -1,0 +1,10 @@
+# lang c
+0x20000000,-,0
+0x20000003,t.c,3,main
+0x20000005,t.c,4,main
+0x20000007,t.c,5,main
+0x20000009,t.c,6,main
+0x2000000B,t.c,7,main
+0x2000000D,t.c,10,helper
+0x2000000F,t.c,11,helper
+0x20000011,t.c,20,last

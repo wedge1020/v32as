@@ -225,6 +225,10 @@ If the source has
 lines,
 .IR OUTPUT .vars
 is written too.
+If it has a
+.B ;@lang X
+line, both files start with the comment line
+.BR "# lang X" .
 .TP
 .BI \-\-map= FILE
 .I FILE
@@ -374,6 +378,15 @@ A malformed
 .B ;@src
 is treated as
 .BR ";@src \-" .
+It also warns about a
+.B ;@lang
+with no name, a second
+.B ;@lang
+with another name (ignored), and a
+.B ;@var
+whose
+.B loc=
+symbol is not known when the file is written.
 .SS "Compatibility and diagnostics"
 .TP
 .B \-\-standard
@@ -450,6 +463,23 @@ and ends at a line
 following its body, at a
 .BR ";@src \-" ,
 or at the end of the program; functions nest.
+When the source says
+.B ;@lang X
+(a comment line of its own, before the first function; the first one counts)
+with
+.I X
+other than
+.BR lua ,
+functions do not nest: the next top\-level
+.B __function_NAME:
+label ends the previous function, so a C compiler needs no
+.B ;@src \-
+or
+.B ;@fn
+after each body.
+A
+.B ;@fn
+written above a label is never an end.
 Instructions an applied marker does not start have no entry; no label is
 written in marker mode.
 .B \-\-map
@@ -457,6 +487,17 @@ entries win for the instructions the map names.
 With
 .B \-\-standard
 the markers are plain comments.
+.PP
+When the source has
+.B ;@lang X
+and the entries come from the markers (not with
+.BR \-\-map ),
+the first line of the file is the comment
+.BR "# lang X" .
+Readers must skip every line that starts with
+.BR # .
+There is no such line without
+.BR ;@lang .
 .SH "THE VARS FILE"
 With
 .B \-g
@@ -488,10 +529,28 @@ as written (for example
 .BR BP\-3 ,
 .BR R5 ,
 .BR @0x20003000 ,
-a symbol, or
+or
 .B \-
 for
 .BR optimized\-out ),
+except that a symbol is resolved: a label, a
+.B label+N
+or
+.B label\-N
+(N decimal or 0x...), or a name that was
+.BR %define d
+as a number or as one of those (for example
+.BR "var_NAME" ),
+is written as
+.BI @0x ADDRESS
+when it is known at the end of the assembly.
+A label gives its address in the style of the START column of the
+.B \-g
+mode; a
+.BR %define d
+number is a plain value and is written as it is.
+An unknown symbol stays as written (and warns under
+.BR \-Wmarkers ).
 TYPE is the
 .B type=
 (or
@@ -507,6 +566,12 @@ of its block (or the end of the function), or until another
 .B ;@var
 of the same name in the same block.
 Empty ranges are left out.
+With
+.B ;@lang X
+the first line is
+.BR "# lang X" ;
+readers must skip lines that start with
+.BR # .
 .SH "THE RELOCATION FILE"
 .B \-r
 writes one line per word that holds an address resolved from a label (code or

@@ -13,7 +13,7 @@
 
 #include "pp.h"
 
-#define  VERSION            "20261104-dev"
+#define  VERSION            "20261101-dev"
 
 #define  BIOS_BASE          0x10000000u
 #define  CART_BASE          0x20000000u
@@ -273,6 +273,9 @@ typedef struct asm_ctx
     int          ev_done;
     int          src_markers;       // read ;@ lines (off under --standard)
     int          warn_markers;      // -Wmarkers: warn about a malformed ;@src, ;@var or ;@scope
+    const char  *lang;              // ;@lang X (the first one): the producer's language, or NULL
+    const char *(*define_of) (void *ud, const char *name);      // a %define'd name's replacement text (NULL: none); for ;@var loc=
+    void        *define_ud;
 
     // state
     const char  *cur_file;
@@ -348,7 +351,9 @@ int     asm_cmap_loaded     (void);
 void    asm_annotation      (asm_t *a, const loc_t *loc, const char *text, size_t n);   // a ;@src, ;@var, ;@scope or ;@fn comment line
 size_t  asm_vars_finish     (asm_t *a);                             // close what is open; the number of FILE.vars records
 int     asm_write_vars      (asm_t *a, FILE *fp, dbgmode_t mode);   // FILE.vars: var and scope ranges (after asm_vars_finish)
-const varrec_t  *asm_var_records (asm_t *a, size_t *n);             // the records, sorted, empty ranges left out (for the object writer)
+const varrec_t  *asm_var_records (asm_t *a, size_t *n);
+const char  *asm_marker_lang (const asm_t *a, int for_debug);      // the "# lang X" language to record (NULL: none)
+const char  *asm_var_loc    (asm_t *a, const varrec_t *r, int final, dbgmode_t mode, char *buf, size_t n);   // the loc= text to write             // the records, sorted, empty ranges left out (for the object writer)
 void    asm_cmap_note       (const char *file, int line);           // note: the C line of an assembly line
 void    asm_print_labels    (asm_t *a, FILE *fp);
 void    asm_add_dep         (asm_t *a, const char *path);

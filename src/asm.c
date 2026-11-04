@@ -11,9 +11,12 @@
 //
 ////////////////////////////////////////////////////////////////////////////////////////
 
+#include <ctype.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 
 #include "v32as.h"
@@ -225,6 +228,8 @@ void  asm_reset (asm_t *a)
     a -> no_warn     = saved.no_warn;
     a -> src_markers = saved.src_markers;
     a -> warn_markers = saved.warn_markers;
+    a -> define_of   = saved.define_of;
+    a -> define_ud   = saved.define_ud;
     a -> incdirs     = saved.incdirs;
     a -> nincdirs    = saved.nincdirs;
     a -> out         = saved.out;
@@ -242,6 +247,7 @@ void  asm_reset (asm_t *a)
 //     ;@var NAME loc=BP-3 [type=lua] [boxed]   NAME lives at loc from the next instruction on
 //     ;@scope {  /  ;@scope }                  a block: its variables go out of scope at the }
 //     ;@fn __function_NAME ...                 written after a function's body: NAME ends here
+//     ;@lang X                                 the producer's language (c, lua, ...)
 //
 // The scanner hands every such line over, in order (asm_annotation). They are applied as the
 // instruction after them is assembled (ev_flush), so each one gets the address of the next
@@ -249,7 +255,8 @@ void  asm_reset (asm_t *a)
 // become the address ranges of FILE.vars.
 //
 // A function starts at a "__function_NAME:" label and ends at the ";@fn __function_NAME" line (or at a
-// ";@src -", or at the end of the program). Functions nest (a Lua closure's body sits inside its
+// ";@src -", or at the end of the program; when the source says ";@lang X" with X other than lua, also at
+// the next function's label). Functions nest (a Lua closure's body sits inside its
 // parent's code), so the open functions and blocks are kept in a stack.
 //
 // A variable is in scope from its ;@var to the end of the block it is declared in (the function, when
@@ -559,6 +566,29 @@ void  asm_annotation (asm_t *a, const loc_t *loc, const char *text, size_t n)
             bad_annotation (a, loc, "scope", p, end, "expected { or }; ignored");
         }
     }
+    else if (klen == 4 && memcmp (kind, "lang", 4) == 0)
+    {
+        const char  *le = p;
+
+        // ";@lang X": the language of the producer (c, lua, ...). The first one counts.
+        while (le < end && !is_blank (*le))
+        {
+            le++;
+        }
+
+        if (le == p)
+        {
+            bad_annotation (a, loc, "lang", p, end, "expected a language name; ignored");
+        }
+        else if (a -> lang == NULL)
+        {
+            a -> lang = keep_str (a, p, (size_t) (le - p));
+        }
+        else if (a -> warn_markers && ((size_t) (le - p) != strlen (a -> lang) || memcmp (a -> lang, p, (size_t) (le - p)) != 0))
+        {
+            asm_warn (a, loc, "';@lang %.*s' ignored: the language is already '%s'", (int) (le - p), p, a -> lang);
+        }
+    }
     else if (klen == 2 && memcmp (kind, "fn", 2) == 0)
     {
         const char  *le = p;
@@ -693,6 +723,212 @@ static void  item_pop (asm_t *a, uint32_t word)
 
     vars_close_scope (a, it.id, word);
     a -> nstk--;
+}
+
+static uint32_t  sym_hash (const char *s, size_t n);
+
+// ";@lang" names a language other than lua: its functions do not nest
+static int  lang_flat (const asm_t *a)
+{
+    return (a -> lang != NULL && strcasecmp (a -> lang, "lua") != 0);
+}
+
+// the language to write as "# lang X" in FILE.debug (for_debug: only in marker mode) and FILE.vars; NULL for none.
+// --map replaces the markers' entries, so nothing changes there.
+const char  *asm_marker_lang (const asm_t *a, int for_debug)
+{
+    if (a -> lang == NULL || !a -> src_markers || asm_cmap_loaded () || (for_debug && !marker_mode (a)))
+    {
+        return (NULL);
+    }
+
+    return (a -> lang);
+}
+
+static const sym_t  *sym_find (const asm_t *a, const char *name)
+{
+    size_t  n = strlen (name);
+    sym_t  *s;
+
+    for (s = a -> tab[sym_hash (name, n) & (a -> tabcap - 1)]; s != NULL; s = s -> next)
+    {
+        if (strlen (s -> name) == n && memcmp (s -> name, name, n) == 0)
+        {
+            return (s);
+        }
+    }
+
+    return (NULL);
+}
+
+// "[-]NUMBER" (decimal or 0x...), the whole text
+static int  loc_number (const char *p, int64_t *v)
+{
+    int      neg = 0, hex = 0;
+    int64_t  x = 0;
+    size_t   n = 0;
+
+    while (*p == ' ' || *p == '\t')  { p++; }
+
+    if (*p == '-')  { neg = 1; p++; }
+
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X'))  { hex = 1; p += 2; }
+
+    for (; *p; p++, n++)
+    {
+        int  d;
+
+        if (*p >= '0' && *p <= '9')                       { d = *p - '0'; }
+        else if (hex && *p >= 'a' && *p <= 'f')           { d = *p - 'a' + 10; }
+        else if (hex && *p >= 'A' && *p <= 'F')           { d = *p - 'A' + 10; }
+        else if ((*p == ' ' || *p == '\t') && n > 0)      { break; }
+        else                                              { return (0); }
+
+        x = x * (hex ? 16 : 10) + d;
+
+        if (x > 0xFFFFFFFFll)  { return (0); }
+    }
+
+    for (; *p == ' ' || *p == '\t'; p++)  { }
+
+    if (n == 0 || *p != 0)  { return (0); }
+
+    *v = neg ? -x : x;
+
+    return (1);
+}
+
+// "NAME" or "NAME+N" / "NAME-N" with NAME an identifier that is not a register
+static int  loc_split (const char *loc, char *id, size_t idn, int64_t *add)
+{
+    const char  *p = loc;
+    size_t       n = 0;
+    const kw_t  *kw;
+
+    if (!(isalpha ((unsigned char) *p) || *p == '_'))
+    {
+        return (0);
+    }
+
+    while (isalnum ((unsigned char) *p) || *p == '_')
+    {
+        if (n + 1 >= idn)  { return (0); }
+
+        id[n++] = *p++;
+    }
+
+    id[n] = 0;
+    *add  = 0;
+
+    if (*p == '+' || *p == '-')
+    {
+        int64_t  v;
+
+        if (!loc_number (p + 1, &v) || p[1] == '-' || p[1] == ' ')
+        {
+            return (0);
+        }
+
+        *add = *p == '-' ? -v : v;
+    }
+    else if (*p != 0)
+    {
+        return (0);
+    }
+
+    kw = kw_lookup (id, n);
+
+    return (kw == NULL || kw -> kind != KW_REGISTER);
+}
+
+// what a ";@var" loc= says: 0 not a symbol (BP-3, R5, @0x..., -: as written), 1 a number (*val), 2 label NAME plus *val.
+// A %define'd name is replaced by its text first (a number, or label[+-N]).
+static int  loc_symbol (asm_t *a, const char *loc, char *name, size_t nn, int64_t *val, int *via_define)
+{
+    int64_t  add, add2, num;
+    int      depth;
+
+    *via_define = 0;
+
+    if (!loc_split (loc, name, nn, &add))
+    {
+        return (0);
+    }
+
+    for (depth = 0; depth < 8 && a -> define_of != NULL; depth++)
+    {
+        const char  *body = a -> define_of (a -> define_ud, name);
+
+        if (body == NULL)
+        {
+            break;
+        }
+
+        *via_define = 1;
+
+        if (loc_number (body, &num))
+        {
+            *val = num + add;
+            return (1);
+        }
+
+        if (!loc_split (body, name, nn, &add2))
+        {
+            return (0);                                  // an expression or a register: left as text
+        }
+
+        add += add2;
+    }
+
+    *val = add;
+
+    return (2);
+}
+
+// The loc= text to write for a variable. final: a finished program (FILE.vars): a symbol is written as @0xADDRESS (a label in
+// the style of the START column of the -g mode, a %define'd number as it is) when it is known; otherwise as written
+// (and -Wmarkers warns). Not final (an object): numbers are resolved, labels are left for the linker (a %define'd label
+// is replaced by its name). 'buf' holds the result when it is not r -> loc.
+const char  *asm_var_loc (asm_t *a, const varrec_t *r, int final, dbgmode_t mode, char *buf, size_t n)
+{
+    char     name[128];
+    int64_t  v;
+    int      viad, k = loc_symbol (a, r -> loc, name, sizeof (name), &v, &viad);
+
+    if (k == 1)
+    {
+        snprintf (buf, n, "@0x%08X", (unsigned) v);
+        return (buf);
+    }
+
+    if (k == 2 && final)
+    {
+        const sym_t  *s = sym_find (a, name);
+
+        if (s != NULL && s -> defined && !s -> external && !s -> datasym)
+        {
+            uint32_t  addr = s -> addr + (uint32_t) v;
+
+            snprintf (buf, n, "@0x%08X", mode == DBG_PROGRAM ? addr
+                                                              : (mode == DBG_V32 ? 0x8Cu : 0x0Cu) + (addr - a -> base) * 4);
+            return (buf);
+        }
+
+        if (a -> warn_markers)
+        {
+            asm_warn (a, NULL, "';@var %s': loc=%s is not a label or number known at the end of the assembly; written as text",
+                      r -> name, r -> loc);
+        }
+    }
+    else if (k == 2 && viad)
+    {
+        if (v != 0)  { snprintf (buf, n, "%s%+lld", name, (long long) v); }
+        else         { snprintf (buf, n, "%s", name); }
+
+        return (buf);
+    }
+
+    return (r -> loc);
 }
 
 static void  ev_apply (asm_t *a, const srcev_t *e, uint32_t word)
@@ -906,10 +1142,17 @@ int  asm_write_vars (asm_t *a, FILE *fp, dbgmode_t mode)
     uint32_t          unit     = (mode == DBG_PROGRAM) ? 1 : 4;
     size_t            n, i;
     const varrec_t  **v = sorted_vars (a, &n);
+    const char       *lang = asm_marker_lang (a, 0);
+
+    if (lang != NULL && n > 0)
+    {
+        fprintf (fp, "# lang %s\n", lang);
+    }
 
     for (i = 0; i < n; i++)
     {
         const varrec_t  *r = v[i];
+        char             lbuf[160];
         uint32_t         s = mode == DBG_PROGRAM ? a -> base + r -> start : base_off + r -> start * unit;
         uint32_t         e = mode == DBG_PROGRAM ? a -> base + r -> end : base_off + r -> end * unit;
 
@@ -919,7 +1162,8 @@ int  asm_write_vars (asm_t *a, FILE *fp, dbgmode_t mode)
         }
         else
         {
-            fprintf (fp, "var,0x%08X,0x%08X,%s,%s,%s,%s,%d", s, e, r -> name, r -> loc,
+            fprintf (fp, "var,0x%08X,0x%08X,%s,%s,%s,%s,%d", s, e, r -> name,
+                     asm_var_loc (a, r, 1, mode, lbuf, sizeof (lbuf)),
                      r -> type != NULL ? r -> type : "-", r -> flags != NULL ? r -> flags : "-", r -> depth);
         }
 
@@ -1065,6 +1309,16 @@ void  asm_label_define (asm_t *a, sym_t *s, const loc_t *loc)
         if (!(cn > 0 && n == cn + 7 && memcmp (fn, cur, cn) == 0 && strcmp (fn + cn, "_return") == 0)
             && !(cn > 0 && n > cn + 2 && memcmp (fn, cur, cn) == 0 && fn[cn] == '_' && fn[cn + 1] == '_'))
         {
+            // ";@lang" with a language other than lua (v32cc's c): functions do not nest, the next one's label ends this one
+            // (a ";@fn __function_NAME" above a label is not an end, for any language)
+            if (lang_flat (a))
+            {
+                while (a -> nstk > 0)
+                {
+                    item_pop (a, (uint32_t) a -> nwords);
+                }
+            }
+
             item_push (a, 1, fn, (uint32_t) a -> nwords);
         }
     }
@@ -2236,6 +2490,11 @@ int  asm_write_debug (asm_t *a, FILE *fp, dbgmode_t mode)
 
     qsort (v, n, sizeof (labaddr_t), labaddr_cmp);
 
+    if (asm_marker_lang (a, 1) != NULL)
+    {
+        fprintf (fp, "# lang %s\n", asm_marker_lang (a, 1));
+    }
+
     for (i = 0; i < a -> nrec; i++)
     {
         const dbgrec_t  *r   = &a -> rec[i];
@@ -2996,6 +3255,7 @@ int  asm_write_object (asm_t *a, FILE *fp)
     const varrec_t  *vr = nvr > 0 ? asm_var_records (a, &nvr) : NULL;       // ;@var / ;@scope ranges: version 3
     int           v2 = a -> has_datasym || asm_cmap_loaded () || marker_mode (a) || nvr > 0;   // flag 16, 4-word debug records
     buf_t         trailer = { 0 };
+    const char   *olang = (marker_mode (a) || nvr > 0) ? asm_marker_lang (a, 0) : NULL;
 
     for (s = a -> first; s != NULL; s = s -> order)
     {
@@ -3142,17 +3402,32 @@ int  asm_write_object (asm_t *a, FILE *fp)
 
     // version 3: after the string table, the number of ;@var / ;@scope records and 9 words each
     // (1 var / 0 scope, start, end, name, loc, type, flags, depth, func: strings are offsets or 0xFFFFFFFF)
+    // version 4 (a ;@lang in marker mode, or with ;@var records): the same, with the language and two flags
+    // (1: for FILE.debug, 2: for FILE.vars) before the count
+    if (olang != NULL)
+    {
+        buf_u32 (&trailer, str_add (&str, olang));
+        buf_u32 (&trailer, (uint32_t) ((marker_mode (a) ? 1 : 0) | (nvr > 0 ? 2 : 0)));
+        buf_u32 (&trailer, (uint32_t) nvr);
+        v2 = 1;
+    }
+
     if (nvr > 0)
     {
-        buf_u32 (&trailer, (uint32_t) nvr);
+        if (olang == NULL)
+        {
+            buf_u32 (&trailer, (uint32_t) nvr);
+        }
 
         for (vi = 0; vi < nvr; vi++)
         {
+            char  lbuf[160];
+
             buf_u32 (&trailer, vr[vi].is_scope ? 0 : 1);
             buf_u32 (&trailer, vr[vi].start);
             buf_u32 (&trailer, vr[vi].end);
             buf_u32 (&trailer, vr[vi].name  != NULL ? str_add (&str, vr[vi].name)  : 0xFFFFFFFFu);
-            buf_u32 (&trailer, vr[vi].loc   != NULL ? str_add (&str, vr[vi].loc)   : 0xFFFFFFFFu);
+            buf_u32 (&trailer, vr[vi].loc   != NULL ? str_add (&str, asm_var_loc (a, &vr[vi], 0, DBG_PROGRAM, lbuf, sizeof (lbuf))) : 0xFFFFFFFFu);
             buf_u32 (&trailer, vr[vi].type  != NULL ? str_add (&str, vr[vi].type)  : 0xFFFFFFFFu);
             buf_u32 (&trailer, vr[vi].flags != NULL ? str_add (&str, vr[vi].flags) : 0xFFFFFFFFu);
             buf_u32 (&trailer, (uint32_t) vr[vi].depth);
@@ -3163,7 +3438,7 @@ int  asm_write_object (asm_t *a, FILE *fp)
     }
 
     buf_put (&out, "V32-VOBJ", 8);
-    buf_u32 (&out, nvr > 0 ? 3 : (v2 ? 2 : 1));         // format version
+    buf_u32 (&out, olang != NULL ? 4 : (nvr > 0 ? 3 : (v2 ? 2 : 1)));         // format version
     buf_u32 (&out, (uint32_t) a -> nwords);
     buf_u32 (&out, (uint32_t) nsyms);
     buf_u32 (&out, nrels);

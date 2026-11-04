@@ -30,7 +30,7 @@ A label not named by either is local to its object (two objects may reuse a loca
 In an object, labels are relative to the object (its first word is 0). `-b -c -O -g -r -T -n -E -B --symbols` and `--standard` are not
 allowed with `-C` (`--map FILE` is: it replaces the assembly file and line of the debug records by the C ones): the base address is the linker's job, and debug records travel inside the object.
 
-## Object format (version 1; version 2 adds datasyms and function names; version 3 adds `;@var` ranges)
+## Object format (version 1; version 2 adds datasyms and function names; version 3 adds `;@var` ranges; version 4 adds the `;@lang`)
 
 All numbers are 32-bit little endian words.
 
@@ -45,7 +45,11 @@ All numbers are 32-bit little endian words.
 | debug | 3 x ndbg (4 x in version 2) | `word`, `file` (string offset), `line`: one per instruction; version 2 adds `func`, a string offset or `0xFFFFFFFF`, the function of a `--map` entry |
 | string table | strsize bytes | NUL terminated strings |
 
-A version 2 object is written when the source has a `datasym`, `--map` was given or the source has `;@src` markers; version 1 otherwise. A version 3 object is a version 2 one (same header, same 16-byte debug records) with a trailer after the string table, written when the source has `;@var` lines: a word with the number of records, then 9 words each: `kind` (1 var, 0 scope), `start`, `end` (word offsets in the object, `end` exclusive), `name`, `loc`, `type`, `flags` (string offsets or `0xFFFFFFFF`), `depth`, `func` (a string offset or `0xFFFFFFFF`): the lines of `NAME.vbin.vars`, in the order they are written. `v32asld` reads all three versions.
+A version 2 object is written when the source has a `datasym`, `--map` was given or the source has `;@src` markers; version 1 otherwise. A version 3 object is a version 2 one (same header, same 16-byte debug records) with a trailer after the string table, written when the source has `;@var` lines: a word with the number of records, then 9 words each: `kind` (1 var, 0 scope), `start`, `end` (word offsets in the object, `end` exclusive), `name`, `loc`, `type`, `flags` (string offsets or `0xFFFFFFFF`), `depth`, `func` (a string offset or `0xFFFFFFFF`): the lines of `NAME.vbin.vars`, in the order they are written. `v32asld` reads all four versions.
+
+A version 4 object is a version 3 one whose trailer starts with two more words before the record count: `lang` (a string offset: the `;@lang X` language) and `flags` (1: write `# lang X` as the first line of `NAME.debug`, set when the source was in marker mode; 2: the same for `NAME.vars`, set when the object has `;@var` records). The count and the records follow as in version 3 (the count may be 0). It is written only when the source has a `;@lang` and either `;@src` markers or `;@var` lines, and `--map` was not given; every other object is written exactly as in version 1 to 3. Of several objects the linker takes the language of the first one that has one, and writes the line when any of them has the flag.
+
+The `loc` string of a `;@var` record is the text of the source, with two changes made by the assembler: a name `%define`d as a number is replaced by `@0xVALUE`, and one `%define`d as `label[+-N]` by that label (and offset). If it is a label, or `label+N` / `label-N` (not a register), `v32asld -g` replaces it by `@0xADDRESS` when it finds the label (a label of the same object first, then a global one), and leaves it as it is otherwise. Objects of versions 3 and older have the text as written.
 
 With `;@src` markers (V32DBG) the debug records are the marker entries, not one per instruction: `word` is the first instruction after the marker, `file`/`line` the marker's, `func` the `__function_NAME` in effect (`NAME`) or `0xFFFFFFFE`, which says "no function" (the linker then writes no label for the record, as `v32as -g` does not). A `;@src -` is the record with file `-` and line 0 (func `0xFFFFFFFE`). `--map` entries replace the marker's for the instructions the map names.
 

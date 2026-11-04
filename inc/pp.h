@@ -75,6 +75,9 @@ void         pp_set_redefine_warning (pp_t *p, int on);     // -Wredefine (defau
 // Files read by %include so far, in order (for -MD)
 const char  *const  *pp_deps (const pp_t *p, size_t *n);
 
+// The replacement text of the object-like macro NAME, or NULL
+const char  *pp_define_text (const pp_t *p, const char *name);
+
 // Every object-like macro as (name, replacement text); for the compiler's variables
 void         pp_each_define (pp_t *p, void (*cb) (void *ud, const char *name, const char *body), void *ud);
 

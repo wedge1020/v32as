@@ -702,6 +702,13 @@ static void  dep_add (pp_t *p, const char *path)
     p -> deps[p -> ndeps++] = xstrndup (path, strlen (path));
 }
 
+const char  *pp_define_text (const pp_t *p, const char *name)
+{
+    const macro_t  *m = macro_find (p, name, strlen (name));
+
+    return (m != NULL && !m -> is_func ? m -> body : NULL);
+}
+
 void  pp_each_define (pp_t *p, void (*cb) (void *ud, const char *name, const char *body), void *ud)
 {
     int       i;

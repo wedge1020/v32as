@@ -5,6 +5,23 @@ listed here is described in `README.md`; this file records what each round (a se
 projects that use the assembler) added or fixed. Before round 9 the assembler had the features described in the
 README's "History and compatibility" section and the preprocessor phases 1 to 3 of `docs/PREPROCESSOR.md`.
 
+## 2026-11-04: functions of C producers, `;@lang`, symbol locations in `.vars`
+
+- **Function ends for non-Lua producers (SA-1).** `;@lang X` (a comment line of its own, the first one counts) is now read. With a
+  language other than `lua`, a new top-level `__function_NAME:` label ends the previous function (its `;@var` ranges and blocks end at that
+  label's address, where the FUNCTION column of `.debug` changes), so `v32cc` (`;@lang c`) needs no `;@src -` or `;@fn` after each body. A
+  `;@fn` above a label stays a hint for every language. Without `;@lang`, or with `lua`, the behaviour is the same as before.
+- **Symbol locations in `.vars` (SA-2).** `;@var NAME loc=SYMBOL` with a label, `label+N`, or a `%define`d name that is a number (v32lua's
+  `var_NAME`) or a label is written as `@0xADDRESS` in the LOC column when known at the end of the assembly (a label in the style of the
+  `-g` mode, a `%define`d number as it is); registers, `@0x...` and `-` are unchanged; an unknown symbol stays text and warns under
+  `-Wmarkers`. With `-C` a `%define`d number is resolved by `v32as`, a label by `v32asld -g` (the object holds the text), giving the same
+  file as the joined source.
+- **`# lang X` (SA-4).** With `;@lang X` in marker mode the first line of `NAME.vbin.debug` is the comment `# lang X`, and the same line
+  starts `NAME.vbin.vars`. Readers must skip lines that start with `#`. Not with `--map`, plain `-g` or `--standard`. **The `.debug` of a
+  source that has `;@lang` therefore changes by that one line** (the goldens of `tests/markers/bench*.debug` got it).
+- **Object format version 4** (`docs/OBJECT.md`): a version 3 object plus the language and two flags, written only for a source with a
+  `;@lang` (in marker mode or with `;@var` lines). Versions 1 to 3 are still read, and objects without `;@lang` are byte-identical to before.
+
 ## 2026-10-27: memory use (so that v32as runs on v32nix)
 
 A named file goes through the preprocessor a line at a time, the preprocessor's output is scanned in place, each

@@ -1,3 +1,4 @@
+# lang lua
 0x20000002,bench.lua,1,main
 0x20000005,bench.lua,3,main
 0x20000009,bench.lua,3,main
