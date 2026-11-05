@@ -954,9 +954,17 @@ static void  ev_apply (asm_t *a, const srcev_t *e, uint32_t word)
                 item_pop (a, word);
             }
 
-            while (a -> nopen > 0)
+            // a variable written outside any function (a global: v32cc's ";@var NAME loc=@ADDR") stays to the end of the program
+            for (k = 0; k < a -> nopen; )
             {
-                var_close (a, a -> nopen - 1, word);
+                if (a -> vars[a -> open[k]].scope_id != 0)
+                {
+                    var_close (a, k, word);
+                }
+                else
+                {
+                    k++;
+                }
             }
             break;
 

@@ -333,6 +333,9 @@ fail=$((fail + $(grep -c '^FAIL' "$T/varsout")))
   "$BIN" --cart -B -g -o "$T/ns.vbin" "$T/ns.asm" 2>/dev/null && [ "$(head -1 "$T/ns.vbin.vars")" = "# lang c" ] && ! grep -q '^#' "$T/ns.vbin.debug" && echo ok || echo "FAIL: ;@lang with ;@var and no ;@src"
   "$BIN" -C -o "$T/ns.v32ob" "$T/ns.asm" 2>/dev/null && "$LD" -c -g -o "$T/ns2.vbin" "$T/ns.v32ob" 2>/dev/null && cmp -s "$T/ns2.vbin.vars" "$T/ns.vbin.vars" \
     && cmp -s "$T/ns2.vbin.debug" "$T/ns.vbin.debug" && echo ok || echo "FAIL: -C: ;@lang with ;@var and no ;@src"
+  # a ;@var outside any function (a global) stays in scope to the end of the program: the first ";@src -" does not end it
+  "$BIN" --cart -B -g -o "$T/cg.vbin" c_globals.asm 2>/dev/null && cmp -s "$T/cg.vbin.vars" c_globals.vars && echo ok || echo "FAIL: c_globals.vars (globals last to the end)"
+  "$BIN" -C -o "$T/cg.v32ob" c_globals.asm 2>/dev/null && "$LD" -c -g -o "$T/cgl.vbin" "$T/cg.v32ob" 2>/dev/null && cmp -s "$T/cgl.vbin.vars" c_globals.vars && echo ok || echo "FAIL: c_globals.vars through the linker"
   # SA-3 through the linker: the same F and R lines (an object has no %define lines, so no V lines)
   "$BIN" -C -o "$T/cm.v32ob" c_multi.asm 2>/dev/null && "$LD" -c -g -o "$T/cml.vbin" "$T/cm.v32ob" 2>/dev/null && [ "$(grep -v '^V,' c_multi.sym)" = "$(cat "$T/cml.vbin.sym")" ] && echo ok || echo "FAIL: v32asld -g .sym"
   # SA-2: symbol locations
