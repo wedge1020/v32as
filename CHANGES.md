@@ -7,6 +7,7 @@ README's "History and compatibility" section and the preprocessor phases 1 to 3 
 
 ## 2026-11-05: `OUTPUT.sym` (SA-3), `make version`
 
+- **`%include` finds the macro libraries by itself.** After the `-I` directories (and not with `--standard`), v32as searches the directory `make install` put `lib/*.inc` in (compiled in from `LIBDIR`) and, next to the program, `lib`, `../lib`, `../share/v32as/lib` and `../Vircon32/v32tools/include/v32as`; only those that exist. So `%include "v32as.inc"` works with no `-I` after an install under any prefix or from an unpacked release. The program's own location comes from `/proc/self/exe` (Linux), `GetModuleFileNameA` (Windows) or `_NSGetExecutablePath` (macOS), else `argv[0]`/`$PATH`. The Windows and macOS branches were not compiled here. `tests/exe_relative.sh`.
 - **Version 20261105-dev**, stamped with the new `make version [V=... VDATE=...]` (the `VERSION` macros of `v32as` and `v32asld` and the `.TH` line of every man page). `make install` and `make sysinstall` (PREFIX=/usr/local) were already there, with `uninstall`.
 - **A resolved symbol file from `-g` (SA-3).** `v32as -g` (not `--standard`) and `v32asld -g` also write `OUTPUT.sym` (`prog.vbin.sym`) in the
   format of v32cc's `NAME.asm.sym`: `kind,name,address,words,cfile,cline` with F (function: top-level label followed by code, name without

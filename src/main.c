@@ -20,6 +20,13 @@
 #include <errno.h>
 #include <getopt.h>
 #include <unistd.h>
+#include <stdint.h>
+#include <limits.h>
+#if defined(_WIN32)
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 
 #ifdef HAVE_READLINE
 #include <readline/readline.h>
@@ -781,6 +788,92 @@ static int  legacy_word (const char *arg, options_t *opt)
     return (0);
 }
 
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// The directories searched for %include after every -I: where the macro libraries
+// (lib/*.inc) were installed (V32AS_LIBDIR, compiled in from the Makefile's LIBDIR), and the
+// places next to the program, so an install under any prefix or an unpacked release finds
+// its own libraries: <exe>/lib, <exe>/../lib, <exe>/../share/v32as/lib,
+// <exe>/../Vircon32/v32tools/include/v32as. Only those that exist are added.
+//
+static char  *exe_directory (const char *argv0)
+{
+    char   buf[4096];
+    char   real[4096];
+    char  *slash  = NULL;
+
+#if defined(__linux__)
+    ssize_t  n  = readlink ("/proc/self/exe", buf, sizeof (buf) - 1);
+
+    if (n > 0)  { buf[n] = '\0';  goto have; }
+#endif
+#if defined(_WIN32)
+    if (GetModuleFileNameA (NULL, buf, (DWORD) sizeof (buf)) > 0)  goto have;
+#endif
+#if defined(__APPLE__)
+    {
+        uint32_t  size  = sizeof (buf);
+
+        if ((_NSGetExecutablePath (buf, &size) == 0) && (realpath (buf, real) != NULL))
+        {
+            snprintf (buf, sizeof (buf), "%s", real);
+            goto have;
+        }
+    }
+#endif
+    if ((argv0 != NULL) && (strchr (argv0, '/') != NULL) && (realpath (argv0, real) != NULL))
+    {
+        snprintf (buf, sizeof (buf), "%s", real);
+        goto have;
+    }
+    if ((argv0 != NULL) && (strchr (argv0, '/') == NULL) && (getenv ("PATH") != NULL))
+    {
+        char  *path  = strdup (getenv ("PATH"));
+        char  *save  = NULL;
+        char  *entry = NULL;
+
+        for (entry = strtok_r (path, ":", &save); entry != NULL; entry = strtok_r (NULL, ":", &save))
+        {
+            snprintf (buf, sizeof (buf), "%s/%s", entry, argv0);
+            if ((access (buf, X_OK) == 0) && (realpath (buf, real) != NULL))
+            {
+                free (path);
+                snprintf (buf, sizeof (buf), "%s", real);
+                goto have;
+            }
+        }
+        free (path);
+    }
+    return (NULL);
+have:
+    slash = strrchr (buf, '/');
+#if defined(_WIN32)
+    if ((strrchr (buf, '\\') != NULL) && ((slash == NULL) || (strrchr (buf, '\\') > slash)))  slash = strrchr (buf, '\\');
+#endif
+    if (slash == NULL)  return (NULL);
+    *slash = '\0';
+    return (strdup (buf));
+}
+
+static void  add_default_include_dirs (pp_t *pp, const char *argv0)
+{
+    static const char *const rel[] = { "lib", "../lib", "../share/v32as/lib", "../Vircon32/v32tools/include/v32as" };
+    char  *dir  = exe_directory (argv0);
+    char   cand[4400];
+    size_t k    = 0;
+
+#ifdef V32AS_LIBDIR
+    if (access (V32AS_LIBDIR, R_OK) == 0)  pp_add_include_dir (pp, V32AS_LIBDIR);
+#endif
+    if (dir == NULL)  return;
+    for (k = 0; k < sizeof (rel) / sizeof (rel[0]); k++)
+    {
+        snprintf (cand, sizeof (cand), "%s/%s", dir, rel[k]);
+        if (access (cand, R_OK) == 0)  pp_add_include_dir (pp, cand);
+    }
+    free (dir);
+}
+
 int  main (int  argc, char **argv)
 {
     static const struct option  long_options[] =
@@ -1138,6 +1231,10 @@ int  main (int  argc, char **argv)
     for (i = 0; i < nincdirs; i++)
     {
         pp_add_include_dir (pp, incdirs[i]);
+    }
+    if (!opt.standard)
+    {
+        add_default_include_dirs (pp, argv[0]);
     }
 
     for (i = 0; i < nmopts; i++)

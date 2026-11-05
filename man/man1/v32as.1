@@ -356,7 +356,14 @@ of
 .BR "%include \(dqname\(dq" " (after the including file's directory)"
 and of
 .BR datafile .
-May be repeated.
+May be repeated. After these (and not with
+.BR \-\-standard )
+v32as also searches the directory the macro libraries were installed in and, next to
+the program,
+.IR lib ", " ../lib ", " ../share/v32as/lib
+and
+.IR ../Vircon32/v32tools/include/v32as ,
+where they exist.
 .TP
 .BR \-E ", " \-\-preprocess
 Only run the preprocessor and print the result (to standard output, or to the

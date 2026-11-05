@@ -76,11 +76,15 @@ $(BUILD)/lexer.o: $(BUILD)/lexer.c $(BUILD)/parser.tab.h $(HDRS)
 	$(CC) $(CFLAGS) -Wno-sign-compare -Wno-unused-function -c -o $@ $<
 
 # hand-written sources
+# where `make install` puts the macro libraries: searched by %include after the -I directories (see add_default_include_dirs)
+$(BUILD)/main.o: override CFLAGS += -DV32AS_LIBDIR='"$(LIBDIR)"'
+
 $(BUILD)/%.o: $(SRC)/%.c $(BUILD)/parser.tab.h $(HDRS) | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 test: all
 	@sh tests/run_tests.sh bin/$(PROJ) bin/v32asld
+	@sh tests/exe_relative.sh bin/$(PROJ)
 
 # Where install puts things.  Without PREFIX the tools go to ~/bin and the man pages to ~/man
 # (what man-db finds for a ~/bin in PATH); with PREFIX=/usr/local (or /usr, /opt/v32as ...) the
