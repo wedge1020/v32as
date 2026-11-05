@@ -5,6 +5,16 @@ listed here is described in `README.md`; this file records what each round (a se
 projects that use the assembler) added or fixed. Before round 9 the assembler had the features described in the
 README's "History and compatibility" section and the preprocessor phases 1 to 3 of `docs/PREPROCESSOR.md`.
 
+## 2026-11-05: `OUTPUT.sym` (SA-3), `make version`
+
+- **Version 20261105-dev**, stamped with the new `make version [V=... VDATE=...]` (the `VERSION` macros of `v32as` and `v32asld` and the `.TH` line of every man page). `make install` and `make sysinstall` (PREFIX=/usr/local) were already there, with `uninstall`.
+- **A resolved symbol file from `-g` (SA-3).** `v32as -g` (not `--standard`) and `v32asld -g` also write `OUTPUT.sym` (`prog.vbin.sym`) in the
+  format of v32cc's `NAME.asm.sym`: `kind,name,address,words,cfile,cline` with F (function: top-level label followed by code, name without
+  `__function_`, size to the next top-level label, position of its first instruction), R (data label) and V (`%define global_NAME` with words 0
+  = not known, `%define var_NAME` of v32lua with words 1). Addresses are always CPU addresses, whatever the `-g` mode. The linker writes F and R
+  only (an object holds no `%define`s) and takes a code label for a function when a debug record names it. Details: README, "The .sym file".
+  Nothing existing changes except that a new file appears next to `.debug`.
+
 ## 2026-11-04: functions of C producers, `;@lang`, symbol locations in `.vars`
 
 - **Function ends for non-Lua producers (SA-1).** `;@lang X` (a comment line of its own, the first one counts) is now read. With a

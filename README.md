@@ -90,7 +90,8 @@ This is the single list of options of `v32as`. `v32as --help` prints the same li
   source, one per marker) next to the output file. Plain `-g` is byte-identical to the official assembler's `-g program` (absolute word addresses,
   e.g. `0x20000000`). `-g vbin` / `-g v32` give real byte offsets in the .vbin (0x0C header) or .v32 (0x8C header) file; the official tool's
   versions of those two print wrapped-around values. A source file literally named `program`, `vbin` or `v32` must be written `./program`.
-  Format: [The .debug file](#the-debug-file). With `;@var` lines in the source, `OUTPUT.vars` is written as well.
+  Format: [The .debug file](#the-debug-file). With `;@var` lines in the source, `OUTPUT.vars` is written as well, and `OUTPUT.sym`
+  always (not with `--standard`): [The .sym file](#the-sym-file).
 - `--map FILE`: FILE is the compiler's debug file (`asmfile,asmline,cfile,cline[,function]`, as `v32cc -g` writes it). The `.debug` file then has
   the same layout, but each instruction names the C file and line (and the function as the label column), which is what v32sim's C overlay reads.
   Instructions whose assembly line is not in FILE are left out. `--map` also works with `-C` and for diagnostics:
@@ -173,6 +174,26 @@ as the comments they are; the file name in the marker is what is written.
   precedence is the same.
 - **`--standard`**: markers are comments; `-g` writes the assembly lines as before.
 
+### The .sym file
+
+`OUTPUT.sym` (with `-g`, not with `--standard`; `OUTPUT` is the output file name, so `prog.vbin.sym`): the symbols with their **final** addresses, in the
+format of v32cc's `NAME.asm.sym`, so that one file serves `nm`, a panic backtrace and a debugger. Addresses are always the ones the CPU sees
+(`0x20000003`), whatever the `-g` mode. First the optional `# lang X` line (as in `.debug`), then:
+
+```
+# v32as symbols v1: kind,name,address,words,cfile,cline
+F,main,0x20000003,10,t.c,3          a function: a top-level label followed by code; "__function_" is removed from the name
+V,counter,0x00000010,1,,            a compiler variable: %define global_NAME number (words 0: not known) or var_NAME number (v32lua, words 1)
+R,_helper_data,0x20000016,2,,       a top-level label followed by data
+```
+
+Order: functions, variables, data, each by address. `words` is the distance to the next top-level label (to the end of the program for the last
+one); file-local labels (`function.local`) do not end a function. `cfile,cline` is the source position of the function's first instruction
+(empty when there is none). The `V` addresses and sizes of `NAME.asm.sym` (which knows the C types) are the better ones when both exist;
+this file adds the final addresses of functions and ROM data, which `NAME.asm.sym` gives as `@label` / `@rodata+OFF`.
+`v32asld -g` writes the same file for the linked objects, without `V` lines (an object carries no `%define`s). Readers must skip lines that
+start with `#`.
+
 ### The .vars file
 
 `OUTPUT.vars` (with `-g`, next to `OUTPUT.debug`; only when the source has `;@var` lines; an old file is removed otherwise): the locals as
@@ -243,7 +264,8 @@ column, `,C` or `,D`, as `v32as -r` does. A datasym has the value 0 in every obj
 
 - `-o, --output FILE` (default `a.vbin`; `a.v32ob` with `-R`); `-b, --bios`, `-c, --cart` (default), `-O, --origin ADDR`.
 - `-g, --debug[=MODE]` writes `OUTPUT.debug` (and `OUTPUT.vars` when the objects have `;@var` records; both start with `# lang X` when
-  the objects were made from a source with `;@lang X`, and the symbol locations of `;@var` are resolved); `-r, --relocs FILE` (also `--emit-relocs FILE`)
+  the objects were made from a source with `;@lang X`, and the symbol locations of `;@var` are resolved; also `OUTPUT.sym`, see
+  [The .sym file](#the-sym-file)); `-r, --relocs FILE` (also `--emit-relocs FILE`)
   the relocation list (format above); `--symbols FILE` the label table.
 - `-A, --archive FILE` makes an archive (`V32-VARC`) of the objects given, instead of linking. Archives given as operands or with
   `-L DIR -l NAME` (`DIR/NAME.v32a`, else `DIR/libNAME.a`; `.` is always searched last) are mined after the objects, a member being linked

@@ -607,6 +607,56 @@ static void  collect_variable (void *ud, const char *name, const char *body)
     x -> n++;
 }
 
+// FILE.vbin.sym: global_NAME (v32cc, size unknown) and var_NAME (v32lua, one word, kind '1') with the prefix removed
+static void  collect_vsym_variable (void *ud, const char *name, const char *body)
+{
+    symbols_t      *x = ud;
+    char           *end;
+    unsigned long   v;
+    char            kind = 'V';
+
+    if (strncmp (name, "global_", 7) == 0)
+    {
+        name += 7;
+    }
+    else if (strncmp (name, "var_", 4) == 0)
+    {
+        name += 4;
+        kind  = '1';
+    }
+    else
+    {
+        return;
+    }
+
+    while (isspace ((unsigned char) *body))  { body++; }
+
+    if (*body == 0 || *name == 0)
+    {
+        return;
+    }
+
+    v = strtoul (body, &end, 0);
+
+    while (isspace ((unsigned char) *end))  { end++; }
+
+    if (end == body || *end != 0 || v > 0xFFFFFFFFul)
+    {
+        return;
+    }
+
+    if (x -> n == x -> cap)
+    {
+        x -> cap = x -> cap ? x -> cap * 2 : 64;
+        x -> v   = realloc (x -> v, x -> cap * sizeof (symline_t));
+    }
+
+    x -> v[x -> n].name = name;
+    x -> v[x -> n].addr = (uint32_t) v;
+    x -> v[x -> n].kind = kind;
+    x -> n++;
+}
+
 static const char  *define_text (void *ud, const char *name)
 {
     return (pp_define_text ((const pp_t *) ud, name));
@@ -1360,6 +1410,32 @@ int  main (int  argc, char **argv)
             unlink (path);
         }
 
+        free (path);
+    }
+
+    // FILE.sym: the symbols with final addresses, in v32cc's .asm.sym format (with -g only; no stale file is left behind)
+    if (rc == 0 && opt.binary && opt.debug && !opt.standard)
+    {
+        char       *path = malloc (strlen (opt.output) + 8);
+        symbols_t   ex = { 0 };
+        FILE       *yfp;
+
+        sprintf (path, "%s.sym", opt.output);
+        pp_each_define (pp, collect_vsym_variable, &ex);
+        yfp = fopen (path, "w");
+
+        if (yfp == NULL || asm_write_vsym (&a, yfp, local_name, pp, ex.v, ex.n) != 0)
+        {
+            fprintf (stderr, "v32as: cannot write '%s': %s\n", path, strerror (errno));
+            rc = 2;
+        }
+
+        if (yfp != NULL)
+        {
+            fclose (yfp);
+        }
+
+        free (ex.v);
         free (path);
     }
 

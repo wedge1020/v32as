@@ -13,7 +13,7 @@
 
 #include "pp.h"
 
-#define  VERSION            "20261104-dev"
+#define  VERSION            "20261105-dev"
 
 #define  BIOS_BASE          0x10000000u
 #define  CART_BASE          0x20000000u
@@ -371,6 +371,10 @@ symline_t;
 
 int     asm_write_symbols   (asm_t *a, FILE *fp, int all,
                              const char *(*local) (void *ud, const char *name), void *local_ud,
+                             const symline_t *extra, size_t nextra);
+
+// FILE.vbin.sym (-g): kind,name,address,words,cfile,cline with final addresses ('extra': V lines, kind '1' = one word)
+int     asm_write_vsym      (asm_t *a, FILE *fp, const char *(*local) (void *ud, const char *name), void *local_ud,
                              const symline_t *extra, size_t nextra);
 
 void    asm_error           (asm_t *a, const loc_t *loc, const char *fmt, ...)

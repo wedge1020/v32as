@@ -1,0 +1,7 @@
+# lang c
+# v32as symbols v1: kind,name,address,words,cfile,cline
+F,main,0x20000003,10,t.c,3
+F,helper,0x2000000D,4,t.c,10
+F,last,0x20000011,5,t.c,20
+V,counter,0x00000010,1,,
+R,_helper_data,0x20000016,2,,

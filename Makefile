@@ -9,6 +9,8 @@
 #   make uninstall  remove what install put there
 #   make sysinstall make install PREFIX=/usr/local
 #   make mancheck   lint the man pages (plain sh and awk)
+#   make version    stamp the version everywhere it appears (inc/v32as.h, src/ld.c, the man pages):
+#                   make version V=20261105-dev [VDATE=2026-11-05]   (default: today's date + -dev)
 #   make archive    zip the sources (without build products) to ../v32as-project.zip
 #
 # Layout:  src/ sources   inc/ headers   docs/ design notes   tests/ regression tests
@@ -126,4 +128,12 @@ clean:
 archive: clean
 	@zip -r $(ARCHIVE) . -x '.git/*' 'build/*' 'bin/*'
 
-.PHONY: all debug test install uninstall sysinstall mancheck clean archive
+# Stamp a version: the VERSION macros of v32as and v32asld and the .TH line of every man page.
+V     ?= $(shell date +%Y%m%d)-dev
+VDATE ?= $(shell date +%Y-%m-%d)
+version:
+	@sed -i 's/^\(#define  VERSION  *\)"[^"]*"/\1"$(V)"/' inc/v32as.h $(SRC)/ld.c
+	@sed -i '1s/^\(\.TH [^"]*\)"[^"]*" "\(v32as[a-z]*\) [^"]*"/\1"$(VDATE)" "\2 $(V)"/' $(MANPAGES)
+	@grep -n '^#define  VERSION' inc/v32as.h $(SRC)/ld.c; head -qn1 $(MANPAGES)
+
+.PHONY: all debug test install uninstall sysinstall mancheck clean archive version

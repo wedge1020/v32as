@@ -3137,6 +3137,166 @@ int  asm_write_symbols (asm_t *a, FILE *fp, int all,
 
 ////////////////////////////////////////////////////////////////////////////////////////
 //
+// FILE.vbin.sym (-g): the symbols with their final addresses, in the format of v32cc's NAME.asm.sym
+//
+//     # v32as symbols v1: kind,name,address,words,cfile,cline
+//     F,main,0x00000123,34,game.c,10      a function (a top-level label followed by code); name without "__function_"
+//     R,table,0x00000200,16,,             a top-level label followed by data
+//     V,counter,0x20000005,0,,            a compiler variable (%define global_NAME / var_NAME number)
+//
+// words: the distance to the next top-level label (the end of the program for the last one); 0 for a V
+// when the size is not known (global_), 1 for a v32lua var_ word.  cfile,cline: the source position of the
+// function's first instruction (empty when the assembly has no position for it).
+//
+typedef struct
+{
+    const sym_t  *sym;
+    uint32_t      addr;
+}
+vsymrow_t;
+
+static int  vsymrow_cmp (const void *x, const void *y)
+{
+    const vsymrow_t  *p = x, *q = y;
+
+    if (p -> addr != q -> addr)
+    {
+        return (p -> addr < q -> addr ? -1 : 1);
+    }
+
+    return (strcmp (p -> sym -> name, q -> sym -> name));
+}
+
+int  asm_write_vsym (asm_t *a, FILE *fp, const char *(*local) (void *ud, const char *name), void *local_ud,
+                     const symline_t *extra, size_t nextra)
+{
+    const sym_t  *s;
+    vsymrow_t    *v = xrealloc (NULL, (a -> nsyms + 1) * sizeof (vsymrow_t));
+    size_t        n = 0, i, k, r = 0;
+    uint32_t      end = a -> base + (uint32_t) a -> nwords;
+    int           pass;
+
+    for (s = a -> first; s != NULL; s = s -> order)
+    {
+        if (!s -> defined || s -> external || s -> datasym)
+        {
+            continue;
+        }
+
+        if (local != NULL && local (local_ud, s -> name) != NULL)
+        {
+            continue;                   // a file-local label does not end a function
+        }
+
+        v[n].sym  = s;
+        v[n].addr = s -> addr;
+        n++;
+    }
+
+    qsort (v, n, sizeof (vsymrow_t), vsymrow_cmp);
+
+    if (asm_marker_lang (a, 1) != NULL)
+    {
+        fprintf (fp, "# lang %s\n", asm_marker_lang (a, 1));
+    }
+
+    fputs ("# v32as symbols v1: kind,name,address,words,cfile,cline\n", fp);
+
+    // functions first, then the variables, then the data, each by address
+    for (pass = 0; pass < 3; pass++)
+    {
+        if (pass == 1)
+        {
+            symline_t  *e = (symline_t *) extra;
+            size_t      j;
+
+            // the variables: sorted by address (the caller's array is sorted in place)
+            for (i = 1; i < nextra; i++)
+            {
+                symline_t  t = e[i];
+
+                for (j = i; j > 0 && e[j - 1].addr > t.addr; j--)
+                {
+                    e[j] = e[j - 1];
+                }
+
+                e[j] = t;
+            }
+
+            for (i = 0; i < nextra; i++)
+            {
+                fprintf (fp, "V,%s,0x%08X,%d,,\n", e[i].name, e[i].addr, e[i].kind == '1' ? 1 : 0);
+            }
+
+            continue;
+        }
+
+        for (i = 0; i < n; i++)
+        {
+            const char  *nm = v[i].sym -> name;
+            uint32_t     next = i + 1 < n ? v[i + 1].addr : end;
+            int          code = v[i].sym -> kind == 'F';
+            const char  *file = NULL;
+            int          line = 0;
+
+            if ((pass == 0) != code)
+            {
+                continue;
+            }
+
+            if (next < v[i].addr)
+            {
+                next = v[i].addr;
+            }
+
+            if (code)
+            {
+                if (strncmp (nm, "__function_", 11) == 0)
+                {
+                    nm += 11;
+                }
+
+                // the first position recorded inside the function
+                for (; r < a -> nrec && a -> base + a -> rec[r].word < v[i].addr; r++)
+                {
+                }
+
+                for (k = r; k < a -> nrec && a -> base + a -> rec[k].word < next; k++)
+                {
+                    const dbgrec_t  *d = &a -> rec[k];
+
+                    if (marker_mode (a) ? d -> mfile != NULL : 1)
+                    {
+                        file = marker_mode (a) ? d -> mfile : d -> file;
+                        line = marker_mode (a) ? d -> mline : d -> line;
+                        break;
+                    }
+                }
+            }
+
+            fprintf (fp, "%c,%s,0x%08X,%u,", code ? 'F' : 'R', nm, v[i].addr, (unsigned) (next - v[i].addr));
+
+            if (file != NULL)
+            {
+                put_path (fp, file);
+                fprintf (fp, ",%d", line);
+            }
+            else
+            {
+                fputc (',', fp);
+            }
+
+            fputc ('\n', fp);
+        }
+    }
+
+    free (v);
+
+    return (ferror (fp) ? -1 : 0);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
 // 'global' and 'extern'
 //
 void  asm_sym_declare (asm_t *a, const loc_t *loc, sym_t *s, int external)

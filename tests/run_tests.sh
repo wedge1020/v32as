@@ -300,6 +300,9 @@ fail=$((fail + $(grep -c '^FAIL' "$T/varsout")))
   # SA-1/SA-4: a C-style source (three functions, nested blocks, no ";@src -" and no ";@fn" after the bodies)
   "$BIN" --cart -B -g -o "$T/cm.vbin" c_multi.asm 2>/dev/null && cmp -s "$T/cm.vbin.debug" c_multi.debug && cmp -s "$T/cm.vbin.vars" c_multi.vars \
     && echo ok || echo "FAIL: c_multi .debug / .vars"
+  "$BIN" --cart -B -g -o "$T/cm.vbin" c_multi.asm 2>/dev/null; cmp -s "$T/cm.vbin.sym" c_multi.sym && echo ok || echo "FAIL: c_multi .sym (SA-3: resolved symbol file)"
+  grep -q '^F,helper,0x2000000D,4,t.c,10$' c_multi.sym && grep -q '^V,counter,0x00000010,1,,$' c_multi.sym && echo ok || echo "FAIL: c_multi .sym lines"
+  rm -f "$T/ss.vbin.sym"; "$BIN" --standard --cart -B -g -o "$T/ss.vbin" c_multi.asm 2>/dev/null; [ ! -e "$T/ss.vbin.sym" ] && echo ok || echo "FAIL: --standard writes no .sym"
   [ "$(head -1 c_multi.debug)" = "# lang c" ] && [ "$(head -1 c_multi.vars)" = "# lang c" ] && echo ok || echo "FAIL: # lang c is the first line of both files"
   # the function ends at the next function's label; a ;@fn above a label is only a hint; an unclosed block ends there too
   grep -q '^var,0x20000005,0x2000000D,argc,BP+2,int,-,0,main$' c_multi.vars && grep -q '^scope,0x2000000F,0x20000011,1,helper$' c_multi.vars \
@@ -330,6 +333,8 @@ fail=$((fail + $(grep -c '^FAIL' "$T/varsout")))
   "$BIN" --cart -B -g -o "$T/ns.vbin" "$T/ns.asm" 2>/dev/null && [ "$(head -1 "$T/ns.vbin.vars")" = "# lang c" ] && ! grep -q '^#' "$T/ns.vbin.debug" && echo ok || echo "FAIL: ;@lang with ;@var and no ;@src"
   "$BIN" -C -o "$T/ns.v32ob" "$T/ns.asm" 2>/dev/null && "$LD" -c -g -o "$T/ns2.vbin" "$T/ns.v32ob" 2>/dev/null && cmp -s "$T/ns2.vbin.vars" "$T/ns.vbin.vars" \
     && cmp -s "$T/ns2.vbin.debug" "$T/ns.vbin.debug" && echo ok || echo "FAIL: -C: ;@lang with ;@var and no ;@src"
+  # SA-3 through the linker: the same F and R lines (an object has no %define lines, so no V lines)
+  "$BIN" -C -o "$T/cm.v32ob" c_multi.asm 2>/dev/null && "$LD" -c -g -o "$T/cml.vbin" "$T/cm.v32ob" 2>/dev/null && [ "$(grep -v '^V,' c_multi.sym)" = "$(cat "$T/cml.vbin.sym")" ] && echo ok || echo "FAIL: v32asld -g .sym"
   # SA-2: symbol locations
   "$BIN" --cart -B -g -o "$T/cs.vbin" c_syms.asm 2>/dev/null && cmp -s "$T/cs.vbin.vars" c_syms.vars && echo ok || echo "FAIL: c_syms.vars"
   "$BIN" --cart -B -g vbin -o "$T/cs.vbin" c_syms.asm 2>/dev/null && cmp -s "$T/cs.vbin.vars" c_syms_vbin.vars && echo ok || echo "FAIL: c_syms.vars in -g vbin mode"

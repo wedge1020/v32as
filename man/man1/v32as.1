@@ -1,4 +1,4 @@
-.TH V32AS 1 "2026-11-04" "v32as 20261101-dev" "Vircon32 assembler manual"
+.TH V32AS 1 "2026-11-05" "v32as 20261105-dev" "Vircon32 assembler manual"
 .SH NAME
 v32as \- assembler for the Vircon32 console
 .SH SYNOPSIS
@@ -229,6 +229,20 @@ If it has a
 .B ;@lang X
 line, both files start with the comment line
 .BR "# lang X" .
+Unless
+.B \-\-standard
+is given,
+.IR OUTPUT .sym
+is written as well: the functions
+.RB ( F ),
+compiler variables
+.RB ( V )
+and data labels
+.RB ( R )
+as
+.IR kind,name,address,words,cfile,cline
+with final addresses (the format of v32cc's
+.IR NAME .asm.sym ).
 .TP
 .BI \-\-map= FILE
 .I FILE
@@ -648,7 +662,7 @@ The default output for an input
 The default output with
 .BR \-C .
 .TP
-.IR OUTPUT .debug ", " OUTPUT .vars
+.IR OUTPUT .debug ", " OUTPUT .vars ", " OUTPUT .sym
 Written by
 .BR \-g .
 .TP

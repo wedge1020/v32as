@@ -21,7 +21,7 @@
 #include <strings.h>
 #include <unistd.h>
 
-#define  VERSION      "20261104-dev"
+#define  VERSION      "20261105-dev"
 #define  BIOS_BASE    0x10000000u
 #define  CART_BASE    0x20000000u
 
@@ -483,6 +483,33 @@ static int  label_cmp (const void *x, const void *y)
     }
 
     return (strcmp (p -> name, q -> name));
+}
+
+// FILE.sym (-g): kind,name,address,words,cfile,cline as 'v32as -g' writes it (F functions, R data; the objects carry no
+// %define lines, so there are no V lines: v32cc's FILE.asm.sym has the variables)
+typedef struct
+{
+    const char  *name;
+    uint32_t     addr;
+    char         kind;                  // 'F' function, 'R' data
+}
+vsym_t;
+
+static int  vsym_cmp (const void *x, const void *y)
+{
+    const vsym_t  *p = x, *q = y;
+
+    if (p -> addr != q -> addr)
+    {
+        return (p -> addr < q -> addr ? -1 : 1);
+    }
+
+    return (strcmp (p -> name, q -> name));
+}
+
+static int  str_cmp (const void *x, const void *y)
+{
+    return (strcmp (*(const char *const *) x, *(const char *const *) y));
 }
 
 static void  put_path (FILE *fp, const char *path)
@@ -1781,6 +1808,153 @@ int  main (int argc, char **argv)
 
                 fclose (fp);
             }
+        }
+
+        // FILE.sym: the functions and data with final addresses and sizes (as 'v32as -g' writes it)
+        {
+            vsym_t       *vs = NULL;
+            size_t        nvs = 0, capv = 0, nfn = 0, capf = 0, f;
+            const char  **fnames = NULL;
+            uint32_t      end = base + (uint32_t) total;
+
+            // the function names the debug records carry (v32cc: NAME, label __function_NAME)
+            for (i = 0; i < nobj; i++)
+            {
+                for (k = 0; k < obj[i].ndbg; k++)
+                {
+                    const unsigned char  *p = obj[i].dbg + (size_t) obj[i].dbgsz * k;
+                    uint32_t              fn = obj[i].version >= 2 ? get32 (p + 12) : NO_STRING;
+
+                    if (fn == NO_STRING || fn == NO_FUNC)
+                    {
+                        continue;
+                    }
+
+                    if (nfn == capf)
+                    {
+                        capf   = capf ? capf * 2 : 64;
+                        fnames = xrealloc (fnames, capf * sizeof (char *));
+                    }
+
+                    fnames[nfn++] = ostr (&obj[i], fn);
+                }
+            }
+
+            if (nfn > 1)
+            {
+                qsort (fnames, nfn, sizeof (char *), str_cmp);
+            }
+
+            for (i = 0; i < nobj; i++)
+            {
+                for (k = 0; k < obj[i].nsyms; k++)
+                {
+                    osym_t       s = osym (&obj[i], (uint32_t) k);
+                    const char  *nm;
+                    int          isfn = 0;
+
+                    if (!(s.flags & SYM_DEFINED) || (s.flags & SYM_DATASYM))
+                    {
+                        continue;
+                    }
+
+                    nm = s.name;
+
+                    if (s.flags & SYM_CODE)
+                    {
+                        const char  *key = strncmp (nm, "__function_", 11) == 0 ? nm + 11 : nm;
+
+                        // a code label is a function when a debug record names it; with no function names at all, every one is
+                        isfn = nfn == 0 || bsearch (&key, fnames, nfn, sizeof (char *), str_cmp) != NULL;
+
+                        if (!isfn)
+                        {
+                            continue;       // a loop label inside a function
+                        }
+
+                        nm = key;
+                    }
+
+                    if (nvs == capv)
+                    {
+                        capv = capv ? capv * 2 : 256;
+                        vs   = xrealloc (vs, capv * sizeof (vsym_t));
+                    }
+
+                    vs[nvs].name = nm;
+                    vs[nvs].addr = base + obj[i].start + s.value;
+                    vs[nvs].kind = isfn ? 'F' : 'R';
+                    nvs++;
+                }
+            }
+
+            if (nvs > 1)
+            {
+                qsort (vs, nvs, sizeof (vsym_t), vsym_cmp);
+            }
+
+            sprintf (path, "%s.sym", output);
+            fp = fopen (path, "w");
+
+            if (fp == NULL)
+            {
+                fprintf (stderr, "v32asld: cannot write '%s': %s\n", path, strerror (errno));
+                return (2);
+            }
+
+            if (lang != NULL && (lflags & 1))
+            {
+                fprintf (fp, "# lang %s\n", lang);
+            }
+
+            fputs ("# v32as symbols v1: kind,name,address,words,cfile,cline\n", fp);
+
+            for (f = 0; f < nvs; f++)
+            {
+                uint32_t     next = f + 1 < nvs ? vs[f + 1].addr : end;
+                const char  *file = NULL;
+                uint32_t     line = 0;
+
+                if (vs[f].kind == 'F')
+                {
+                    // the first source position inside the function
+                    uint32_t  bestw = 0xFFFFFFFFu;
+
+                    for (i = 0; i < nobj; i++)
+                    {
+                        for (k = 0; k < obj[i].ndbg; k++)
+                        {
+                            const unsigned char  *p = obj[i].dbg + (size_t) obj[i].dbgsz * k;
+                            uint32_t              a = base + obj[i].start + get32 (p);
+
+                            if (a >= vs[f].addr && a < next && a < bestw && get32 (p + 8) != 0)
+                            {
+                                bestw = a;
+                                file  = ostr (&obj[i], get32 (p + 4));
+                                line  = get32 (p + 8);
+                            }
+                        }
+                    }
+                }
+
+                fprintf (fp, "%c,%s,0x%08X,%u,", vs[f].kind, vs[f].name, vs[f].addr, (unsigned) (next > vs[f].addr ? next - vs[f].addr : 0));
+
+                if (file != NULL)
+                {
+                    put_path (fp, file);
+                    fprintf (fp, ",%u", line);
+                }
+                else
+                {
+                    fputc (',', fp);
+                }
+
+                fputc ('\n', fp);
+            }
+
+            fclose (fp);
+            free (vs);
+            free (fnames);
         }
 
         free   (path);
