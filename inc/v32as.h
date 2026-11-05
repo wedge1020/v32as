@@ -165,7 +165,7 @@ dbgrec_t;
 
 // The ";@..." comment lines of V32DBG, in source order (the scanner hands them over; they are used when the
 // instruction that follows them is assembled)
-typedef enum { EV_SRC, EV_NONE, EV_VAR, EV_SCOPE_OPEN, EV_SCOPE_CLOSE, EV_FN_END } evkind_t;
+typedef enum { EV_SRC, EV_NONE, EV_VAR, EV_SCOPE_OPEN, EV_SCOPE_CLOSE, EV_FN_END, EV_HOME } evkind_t;
 
 typedef struct
 {
@@ -173,7 +173,7 @@ typedef struct
     evkind_t     kind;
     const char  *file;              // EV_SRC: FILE:LINE; EV_NONE (";@src -", or a malformed one): "-" and 0
     int          line;
-    const char  *name;              // EV_VAR: NAME (EV_FN_END: the function name, without "__function_")
+    const char  *name;              // EV_VAR: NAME (EV_FN_END: the function name, without "__function_"; EV_HOME: the new home TO)
     const char  *loc;               // EV_VAR: loc= (or "-"), type= (or NULL), the other words joined by '+' (or NULL)
     const char  *type;
     const char  *flags;

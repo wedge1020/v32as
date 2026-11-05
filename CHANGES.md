@@ -14,6 +14,7 @@ README's "History and compatibility" section and the preprocessor phases 1 to 3 
   = not known, `%define var_NAME` of v32lua with words 1). Addresses are always CPU addresses, whatever the `-g` mode. The linker writes F and R
   only (an object holds no `%define`s) and takes a code label for a function when a debug record names it. Details: README, "The .sym file".
   Nothing existing changes except that a new file appears next to `.debug`.
+- **`;@home FROM TO` (v32opt's SO-1).** A variable whose home moved (`;@home BP-3 R5` ... `;@home R5 BP-3`, or `TO` = `optimized-out`) gets a new `.vars` record from that point, in its own block; the old one ends there. `tests/markers/c_home.asm`.
 - **A `;@var` outside any function lasts to the end of the program.** v32cc's globals (`;@var NAME loc=global_NAME`, written at the top) used to
   end at the first `;@src -`; now only variables of a function (or of a block in it) end there. `tests/markers/c_globals.asm`.
 

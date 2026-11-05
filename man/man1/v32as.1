@@ -528,7 +528,13 @@ is written: the locals as address ranges.
 The addresses are as in the .debug file for the same
 .IR MODE ;
 END is the first address that is out of scope.
-One CSV line each, in order of START, a block before its variables:
+One CSV line each, in order of START, a block before its variables.
+A line
+.B ;@home FROM TO
+(written by v32opt when it moves a variable) ends the record of every variable in scope whose home is FROM and starts one with the home TO
+in the same block;
+.B optimized\-out
+as TO means the value is gone.
 .PP
 .nf
 .RS

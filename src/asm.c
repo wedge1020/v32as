@@ -552,6 +552,43 @@ void  asm_annotation (asm_t *a, const loc_t *loc, const char *text, size_t n)
     {
         annotate_var (a, loc, p, end);
     }
+    else if (klen == 4 && memcmp (kind, "home", 4) == 0)
+    {
+        // ";@home FROM TO": every variable in scope whose home is FROM is now in TO (an optimizer moved it, over a region of
+        // the code: ";@home BP-3 R5" at the start, ";@home R5 BP-3" at the end). TO "optimized-out": its value is gone.
+        const char  *fe = p, *ts, *te;
+
+        while (fe < end && !is_blank (*fe))
+        {
+            fe++;
+        }
+
+        ts = fe;
+
+        while (ts < end && is_blank (*ts))
+        {
+            ts++;
+        }
+
+        te = ts;
+
+        while (te < end && !is_blank (*te))
+        {
+            te++;
+        }
+
+        if (fe == p || te == ts || te != end)
+        {
+            bad_annotation (a, loc, "home", p, end, "expected FROM TO; ignored");
+        }
+        else if (!a -> no_rec)
+        {
+            srcev_t  *e = ev_add (a, loc, EV_HOME);
+
+            e -> loc  = keep_str (a, p, (size_t) (fe - p));
+            e -> name = keep_str (a, ts, (size_t) (te - ts));
+        }
+    }
     else if (klen == 5 && memcmp (kind, "scope", 5) == 0)
     {
         if (end - p == 1 && (*p == '{' || *p == '}'))
@@ -1004,6 +1041,77 @@ static void  ev_apply (asm_t *a, const srcev_t *e, uint32_t word)
             }
 
             a -> open[a -> nopen++] = a -> nvars++;
+            break;
+        }
+
+        case EV_HOME:
+        {
+            // the open variables whose home is FROM get a new record from here on, in the same block, with the home TO
+            size_t   todo[64], ntodo = 0, t;
+            int      gone = strcasecmp (e -> name, "optimized-out") == 0;
+
+            for (k = 0; k < a -> nopen && ntodo < 64; k++)
+            {
+                const varrec_t  *o = &a -> vars[a -> open[k]];
+
+                if (o -> loc != NULL && strcasecmp (o -> loc, e -> loc) == 0)
+                {
+                    todo[ntodo++] = a -> open[k];
+                }
+            }
+
+            for (t = 0; t < ntodo; t++)
+            {
+                size_t     oi = todo[t], pos;
+                varrec_t  *v;
+                char       fl[160];
+
+                for (pos = 0; pos < a -> nopen && a -> open[pos] != oi; pos++)
+                {
+                }
+
+                if (pos == a -> nopen)
+                {
+                    continue;
+                }
+
+                var_close (a, pos, word);
+
+                v  = var_new (a);                   // (may move the array: the old record is read through its index)
+                *v = a -> vars[oi];
+                v -> seq   = (uint32_t) a -> nvars;
+                v -> start = word;
+                v -> end   = 0xFFFFFFFFu;
+                v -> skip  = 0;
+
+                if (gone)
+                {
+                    v -> loc = src_none;
+
+                    if (v -> flags == NULL)
+                    {
+                        v -> flags = "optimized-out";
+                    }
+                    else if (strstr (v -> flags, "optimized-out") == NULL)
+                    {
+                        snprintf (fl, sizeof (fl), "%s+optimized-out", v -> flags);
+                        v -> flags = keep_str (a, fl, strlen (fl));
+                    }
+                }
+                else
+                {
+                    v -> loc = e -> name;
+                }
+
+                if (a -> nopen == a -> opencap)
+                {
+                    a -> opencap = a -> opencap ? a -> opencap * 2 : 16;
+                    a -> open    = xrealloc (a -> open, a -> opencap * sizeof (size_t));
+                }
+
+                a -> open[a -> nopen++] = a -> nvars++;
+            }
+
             break;
         }
 

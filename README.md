@@ -216,6 +216,11 @@ innermost of two variables with the same name. The scope lines are the `;@scope 
   e.g. the optimizer's `loc=R5`, or `;@var NAME optimized-out`). A same-name `;@var` in a *nested* block shadows and does not end
   the outer one. Empty ranges (`do end`) are left out. An unbalanced `;@scope }` is ignored and an open block is closed with its
   function (both warn under `-Wmarkers`).
+- **`;@home FROM TO`** (an optimizer moved variables; `v32opt` writes it when it promotes a stack slot to a register): every variable in
+  scope whose home (its current `loc=`) is `FROM` gets a new record from this point on, in the same block, with the home `TO`:
+  `;@home BP-3 R5` where the value moves into R5, `;@home R5 BP-3` where it goes back. `TO` may be `optimized-out` (the value is gone;
+  the record gets that flag and `loc` `-`). The old record ends here, so `NAME.vbin.vars` lists the variable once per home. A `;@home`
+  that matches nothing is ignored. Like the other `;@` lines it is a comment for every other tool.
 - **Symbol locations.** A `loc=SYMBOL` where SYMBOL is a label, `label+N` / `label-N` (N decimal or `0x...`), or a name `%define`d as a
   number or as one of those (v32lua's `%define var_NAME 0x78`; the replacement text must be just that, no other expression) is written in
   the LOC column as `@0xADDRESS` when it is known at the end of the assembly. A label gives its address in the style of the START and END

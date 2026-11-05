@@ -336,6 +336,9 @@ fail=$((fail + $(grep -c '^FAIL' "$T/varsout")))
   # a ;@var outside any function (a global) stays in scope to the end of the program: the first ";@src -" does not end it
   "$BIN" --cart -B -g -o "$T/cg.vbin" c_globals.asm 2>/dev/null && cmp -s "$T/cg.vbin.vars" c_globals.vars && echo ok || echo "FAIL: c_globals.vars (globals last to the end)"
   "$BIN" -C -o "$T/cg.v32ob" c_globals.asm 2>/dev/null && "$LD" -c -g -o "$T/cgl.vbin" "$T/cg.v32ob" 2>/dev/null && cmp -s "$T/cgl.vbin.vars" c_globals.vars && echo ok || echo "FAIL: c_globals.vars through the linker"
+  # ;@home: a variable's home moves (v32opt promoting a slot to a register) and back, or is gone
+  "$BIN" --cart -B -g -o "$T/ch.vbin" c_home.asm 2>/dev/null && cmp -s "$T/ch.vbin.vars" c_home.vars && echo ok || echo "FAIL: c_home.vars (;@home)"
+  "$BIN" -C -o "$T/ch.v32ob" c_home.asm 2>/dev/null && "$LD" -c -g -o "$T/chl.vbin" "$T/ch.v32ob" 2>/dev/null && cmp -s "$T/chl.vbin.vars" c_home.vars && echo ok || echo "FAIL: c_home.vars through the linker"
   # SA-3 through the linker: the same F and R lines (an object has no %define lines, so no V lines)
   "$BIN" -C -o "$T/cm.v32ob" c_multi.asm 2>/dev/null && "$LD" -c -g -o "$T/cml.vbin" "$T/cm.v32ob" 2>/dev/null && [ "$(grep -v '^V,' c_multi.sym)" = "$(cat "$T/cml.vbin.sym")" ] && echo ok || echo "FAIL: v32asld -g .sym"
   # SA-2: symbol locations
