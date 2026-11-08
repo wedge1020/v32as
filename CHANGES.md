@@ -5,6 +5,19 @@ listed here is described in `README.md`; this file records what each round (a se
 projects that use the assembler) added or fixed. Before round 9 the assembler had the features described in the
 README's "History and compatibility" section and the preprocessor phases 1 to 3 of `docs/PREPROCESSOR.md`.
 
+## 2026-11-08: CMake build, `-j` fix, `PREFIX` in `sysinstall`; version `20261108-dev`
+
+- **A CMake build** (`CMakeLists.txt`, `cmake/cmake_uninstall.cmake.in`), laid out after v32lua's, alongside the
+  Makefile (the two never share products; build in `build-cmake`, not `build`). Needs flex and bison; GNU readline
+  is optional (`-DV32AS_READLINE=OFF`). Installs as `make sysinstall` does (`bin/`, `share/man/man{1,3,7}`,
+  `share/v32as/lib`), documents under `Vircon32/v32tools/docs/v32as`; on Windows (MSYS2/MinGW) under
+  `<Program Files>/Vircon32/v32tools`. `ctest` runs the regression tests, `exe_relative` and `mancheck`.
+- **`make -j` no longer corrupts the parser.** `build/parser.tab.c` and `parser.tab.h` were one two-target rule, so
+  bison ran twice at once; the header now depends on the `.c`.
+- **`make sysinstall` honours `PREFIX`** (it was fixed to `/usr/local`); new `make sysuninstall`.
+- `%include` is also looked for in `include/v32as` beside the program (the Windows install layout, moved).
+- Version `20261108-dev`.
+
 ## 2026-11-05: `OUTPUT.sym` (SA-3), `make version`
 
 - **`%include` finds the macro libraries by itself.** After the `-I` directories (and not with `--standard`), v32as searches the directory `make install` put `lib/*.inc` in (compiled in from `LIBDIR`) and, next to the program, `lib`, `../lib`, `../share/v32as/lib` and `../Vircon32/v32tools/include/v32as`; only those that exist. So `%include "v32as.inc"` works with no `-I` after an install under any prefix or from an unpacked release. The program's own location comes from `/proc/self/exe` (Linux), `GetModuleFileNameA` (Windows) or `_NSGetExecutablePath` (macOS), else `argv[0]`/`$PATH`. The Windows and macOS branches were not compiled here. `tests/exe_relative.sh`.

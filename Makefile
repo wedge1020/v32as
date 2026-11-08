@@ -7,7 +7,8 @@
 #                   (default: ~/bin and ~/man; PREFIX=/usr/local gives the usual layout;
 #                   DESTDIR, PREFIX, BINDIR, MANDIR and LIBDIR are honoured)
 #   make uninstall  remove what install put there
-#   make sysinstall make install PREFIX=/usr/local
+#   make sysinstall make install PREFIX=/usr/local (or the PREFIX you give; DESTDIR works too)
+#   make sysuninstall  the reverse
 #   make mancheck   lint the man pages (plain sh and awk)
 #   make version    stamp the version everywhere it appears (inc/v32as.h, src/ld.c, the man pages):
 #                   make version V=20261105-dev [VDATE=2026-11-05]   (default: today's date + -dev)
@@ -62,8 +63,15 @@ $(BUILD):
 	@mkdir -p $(BUILD)
 
 # generated sources
-$(BUILD)/parser.tab.c $(BUILD)/parser.tab.h: $(SRC)/parser.y | $(BUILD)
+# One rule per output: a rule with two targets is two independent rules to make, and
+# under -j bison would run twice at once and corrupt parser.tab.c. The header comes
+# with the source file (bison -d writes both), hence the recipe only freshens its time stamp.
+$(BUILD)/parser.tab.c: $(SRC)/parser.y | $(BUILD)
 	$(BISON) -Wall -d -o $(BUILD)/parser.tab.c $(SRC)/parser.y
+
+$(BUILD)/parser.tab.h: $(BUILD)/parser.tab.c
+	@[ -f $@ ] || { rm -f $<; $(MAKE) --no-print-directory $<; }
+	@touch $@
 
 $(BUILD)/lexer.c: $(SRC)/lexer.l $(BUILD)/parser.tab.h | $(BUILD)
 	$(FLEX) -o $@ $(SRC)/lexer.l
@@ -119,8 +127,14 @@ uninstall:
 	    rm -f $(DESTDIR)$(MANDIR)/$$(basename $$(dirname $$f))/$$(basename $$f); \
 	done
 
+# System-wide: PREFIX (default /usr/local) and DESTDIR are honoured.
+SYSPREFIX = $(if $(PREFIX),$(PREFIX),/usr/local)
+
 sysinstall: all
-	$(MAKE) install PREFIX=/usr/local
+	$(MAKE) install PREFIX=$(SYSPREFIX)
+
+sysuninstall:
+	$(MAKE) uninstall PREFIX=$(SYSPREFIX)
 
 # A simple lint of the man pages: structure and ASCII only (no groff needed)
 mancheck:
@@ -140,4 +154,4 @@ version:
 	@sed -i '1s/^\(\.TH [^"]*\)"[^"]*" "\(v32as[a-z]*\) [^"]*"/\1"$(VDATE)" "\2 $(V)"/' $(MANPAGES)
 	@grep -n '^#define  VERSION' inc/v32as.h $(SRC)/ld.c; head -qn1 $(MANPAGES)
 
-.PHONY: all debug test install uninstall sysinstall mancheck clean archive version
+.PHONY: all debug test install uninstall sysinstall sysuninstall mancheck clean archive version

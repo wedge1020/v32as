@@ -857,7 +857,7 @@ have:
 
 static void  add_default_include_dirs (pp_t *pp, const char *argv0)
 {
-    static const char *const rel[] = { "lib", "../lib", "../share/v32as/lib", "../Vircon32/v32tools/include/v32as" };
+    static const char *const rel[] = { "lib", "../lib", "../share/v32as/lib", "../Vircon32/v32tools/include/v32as", "include/v32as" };
     char  *dir  = exe_directory (argv0);
     char   cand[4400];
     size_t k    = 0;
