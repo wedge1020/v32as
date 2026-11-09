@@ -150,9 +150,11 @@ archive: clean
 # Stamp a version: the VERSION macros of v32as and v32asld and the .TH line of every man page.
 V     ?= $(shell date +%Y%m%d)-dev
 VDATE ?= $(shell date +%Y-%m-%d)
+# (sed -i.bak and then rm: the one spelling of in-place editing that GNU and BSD/macOS sed both accept)
 version:
-	@sed -i 's/^\(#define  VERSION  *\)"[^"]*"/\1"$(V)"/' inc/v32as.h $(SRC)/ld.c
-	@sed -i '1s/^\(\.TH [^"]*\)"[^"]*" "\(v32as[a-z]*\) [^"]*"/\1"$(VDATE)" "\2 $(V)"/' $(MANPAGES)
-	@grep -n '^#define  VERSION' inc/v32as.h $(SRC)/ld.c; head -qn1 $(MANPAGES)
+	@sed -i.bak 's/^\(#define  VERSION  *\)"[^"]*"/\1"$(V)"/' inc/v32as.h $(SRC)/ld.c
+	@sed -i.bak '1s/^\(\.TH [^"]*\)"[^"]*" "\(v32as[a-z]*\) [^"]*"/\1"$(VDATE)" "\2 $(V)"/' $(MANPAGES)
+	@rm -f inc/v32as.h.bak $(SRC)/ld.c.bak $(addsuffix .bak,$(MANPAGES))
+	@grep -n '^#define  VERSION' inc/v32as.h $(SRC)/ld.c; for f in $(MANPAGES); do sed -n 1p $$f; done
 
 .PHONY: all debug test install uninstall sysinstall sysuninstall mancheck clean archive version

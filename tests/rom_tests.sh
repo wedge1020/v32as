@@ -9,10 +9,11 @@ T=${TMPDIR:-/tmp}/v32as_rom_test.$$; mkdir -p "$T"; trap 'rm -rf "$T"' EXIT
 pass=0; fail=0
 ok()  { pass=$((pass+1)); }
 bad() { fail=$((fail+1)); echo "FAIL: $1"; }
-inode() { ls -i "$1" | sed 's/ .*//'; }
+inode() { set -- $(ls -i "$1"); echo "$1"; }          # (ls -i pads its number with blanks on some systems)
 chmod +x "$HERE"/rom/stubs/* 2>/dev/null     # (an archive may have lost the mode)
 PATH=$HERE/rom/stubs:$PATH; export PATH
 STUBLOG=$T/stub.log; export STUBLOG
+[ -n "$(inode "$HERE/rom_tests.sh")" ] || { echo "FAIL: cannot read inode numbers with ls -i"; exit 1; }
 unset V32AS_BUILD_SCRIPT NO_OPT OPTFAIL
 V32AS=$BIN; export V32AS                # the scripts call v32as by name: this is the one under test
 
