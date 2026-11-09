@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<rom-definition version="1.0">
+    <rom type="cartridge" title="Rock &amp; &lt;Roll&gt; &quot;Deluxe&quot; [optimized]" version="2.1" />
+    <binary path="gameOpt.vbin" />
+    <textures>
+        <texture path="font.vtex" />
+        <texture path="bg.vtex" />
+        <texture path="gfx/pre.vtex" />
+    </textures>
+    <sounds>
+        <sound path="boom.vsnd" />
+    </sounds>
+</rom-definition>

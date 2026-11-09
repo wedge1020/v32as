@@ -81,6 +81,14 @@ const char  *pp_define_text (const pp_t *p, const char *name);
 // Every object-like macro as (name, replacement text); for the compiler's variables
 void         pp_each_define (pp_t *p, void (*cb) (void *ud, const char *name, const char *body), void *ud);
 
+// The ROM definition the source asked for with %title, %version, %texture and %sound (extensions, not under
+// --standard). Texture and sound lists are separate (sound = 0: textures, 1: sounds); an entry is the file name
+// as written and, when it was found (next to the file with the directive, then the -I directories), where.
+const char  *pp_rom_title     (const pp_t *p);          // NULL: none given
+const char  *pp_rom_version   (const pp_t *p);          // NULL: none given
+size_t       pp_rom_resources (const pp_t *p, int sound);
+const char  *pp_rom_resource  (const pp_t *p, int sound, size_t i, const char **found);
+
 // For a label the assembler sees (e.g. "_draw__again") that came from a file-local ".again"
 // under "_draw:", its spelling "_draw.again"; NULL for any other label
 const char  *pp_local_name (pp_t *p, const char *mangled);

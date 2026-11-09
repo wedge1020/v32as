@@ -34,6 +34,7 @@
 #endif
 
 #include "v32as.h"
+#include "buildscript.h"
 
 typedef struct
 {
@@ -70,6 +71,11 @@ typedef struct
     int          dep_phony;         // -MP
     int          no_redefine;       // -Wno-redefine
     int          warn_markers;      // -Wmarkers: warn about a malformed ;@src line
+    const char  *rom_xml;           // --rom-xml FILE: the ROM definition for packrom
+    const char  *rom_xml_opt;       // --rom-xml-opt FILE: the same for the v32opt build
+    int          build_scripts;     // --build-scripts: 1, --no-build-scripts: -1
+    const char  *script_formats;    // --build-scripts=FORMATS
+    const char  *script_dir;        // --build-script-dir DIR
 }
 options_t;
 
@@ -123,6 +129,16 @@ static void  usage (FILE *fp)
         "  -MD, -MMD            write the files read (%%include, datafile) as a Makefile rule to\n"
         "                       OUTPUT with a .d extension; -MF FILE names it, -MT TARGET the target,\n"
         "                       -MP adds an empty rule for each dependency\n"
+        "      --rom-xml=FILE   also write the ROM definition packrom reads (FILE.xml): the %%title, %%version,\n"
+        "                       %%texture and %%sound of the source, naming the VBIN; the images and sounds are\n"
+        "                       named as the .vtex and .vsnd files png2vircon and wav2vircon make from them\n"
+        "      --rom-xml-opt=FILE  the definition for the optimized (v32opt) build, NAMEOpt.vbin\n"
+        "      --build-scripts[=FORMATS]\n"
+        "                       write Make.sh and Make.bat (FORMATS: sh, bat) that rebuild the cartridge: v32opt (when\n"
+        "                       installed), v32as, png2vircon, wav2vircon, packrom; next to the first source. A script\n"
+        "                       not written by v32as is never replaced; --rom-xml defaults to NAME.xml\n"
+        "      --no-build-scripts  never write them (what the scripts themselves pass; V32AS_BUILD_SCRIPT=1 does the same)\n"
+        "      --build-script-dir=DIR  write them in DIR instead\n"
         "  -T, --text           print a human-readable listing (instruction encodings) instead\n"
         "                       of writing a VBIN; addresses start at 0 unless -b/-c/-O is given\n"
         "  -n, --none           same as --text with no base address\n"
@@ -767,6 +783,118 @@ static int  write_deps (const options_t *opt, const char **files, int nfiles, pp
 
 ////////////////////////////////////////////////////////////////////////////////////////
 //
+// --rom-xml, --rom-xml-opt, --build-scripts: the ROM definition and the scripts that rebuild the cartridge
+//
+static int  rom_outputs (const options_t *opt, const char *argv0, const char **files, int nfiles,
+                         const macro_opt_t *mopts, int nmopts, const char **incdirs, int nincdirs, pp_t *pp)
+{
+    bs_args_t    flags  = { 0 };
+    bs_args_t    inputs = { 0 };
+    bs_job_t     job;
+    bs_names_t   nm;
+    char        *tool   = strdup (argv0);
+    char        *title;
+    const char  *slash;
+    int          scripts = (opt -> build_scripts > 0);
+    int          rc = 0;
+    int          i;
+
+    // the options the scripts give the assembler again (the output, the definition and the sources are theirs)
+    if (opt -> no_warn)       { bs_args_add (&flags, "-w", 0); }
+    if (opt -> no_redefine)   { bs_args_add (&flags, "-Wno-redefine", 0); }
+    if (opt -> warn_markers)  { bs_args_add (&flags, "-Wmarkers", 0); }
+
+    for (i = 0; i < nmopts; i++)
+    {
+        bs_args_add (&flags, mopts[i].undef ? "-U" : "-D", 0);
+        bs_args_add (&flags, mopts[i].arg, 0);
+    }
+
+    for (i = 0; i < nincdirs; i++)
+    {
+        bs_args_add (&flags, "-I", 0);
+        bs_args_add (&flags, incdirs[i], 1);
+    }
+
+    if (opt -> debug)
+    {
+        bs_args_add (&flags, opt -> debug_mode == DBG_VBIN ? "--debug=vbin"
+                           : (opt -> debug_mode == DBG_V32 ? "--debug=v32" : "--debug=program"), 0);
+    }
+
+    if (opt -> map)
+    {
+        bs_args_add (&flags, "--map", 0);
+        bs_args_add (&flags, opt -> map, 1);
+    }
+
+    for (i = 0; i < nfiles; i++)
+    {
+        bs_args_add (&inputs, files[i], 1);
+    }
+
+    // the tool as it was called, without its directory: the scripts find it through the PATH (or V32AS)
+    slash = strrchr (tool, '/');
+
+    if (slash != NULL)
+    {
+        memmove (tool, slash + 1, strlen (slash));
+    }
+
+    if (strlen (tool) > 4 && strcmp (tool + strlen (tool) - 4, ".exe") == 0)
+    {
+        tool[strlen (tool) - 4] = 0;
+    }
+
+    // the title when the source has no %title: the program's name
+    slash = strrchr (opt -> output, '/');
+    title = strdup (slash ? slash + 1 : opt -> output);
+
+    if (strrchr (title, '.') > title)
+    {
+        *strrchr (title, '.') = 0;
+    }
+
+    memset (&job, 0, sizeof (job));
+    job.tool    = tool;
+    job.bios    = opt -> bios;
+    job.output  = opt -> output;
+    job.xml     = opt -> rom_xml;
+    job.xml_opt = opt -> rom_xml_opt;
+    job.dir     = opt -> script_dir;
+    job.formats = opt -> script_formats ? opt -> script_formats : "sh,bat";
+    job.flags   = &flags;
+    job.inputs  = &inputs;
+    job.pp      = pp;
+    bs_names (&job, &nm);
+
+    if ((opt -> rom_xml || scripts) && bs_write_xml (pp, nm.xml, opt -> output, opt -> bios, 0, title) != 0)
+    {
+        rc = 2;
+    }
+
+    if (rc == 0 && (opt -> rom_xml_opt || (scripts && nm.has_opt))
+        && bs_write_xml (pp, nm.xml_opt, nm.vbin_opt, opt -> bios, 1, title) != 0)
+    {
+        rc = 2;
+    }
+
+    if (rc == 0 && scripts)
+    {
+        bs_emit_scripts (&job);                  // (a script that cannot be written is a warning: the program is built)
+    }
+
+    bs_names_free (&nm);
+    bs_args_free (&flags);
+    bs_args_free (&inputs);
+    free (tool);
+    free (title);
+
+    return (rc);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
 // Command line
 //
 static int  legacy_word (const char *arg, options_t *opt)
@@ -893,6 +1021,11 @@ int  main (int  argc, char **argv)
         { "force-define", required_argument, 0, 1005 },
         { "v32x",     no_argument,       0, 1006 },
         { "v32x-data", required_argument, 0, 1007 },
+        { "rom-xml",  required_argument, 0, 1010 },
+        { "rom-xml-opt", required_argument, 0, 1011 },
+        { "build-scripts", optional_argument, 0, 1012 },
+        { "no-build-scripts", no_argument, 0, 1013 },
+        { "build-script-dir", required_argument, 0, 1014 },
         { "binary",   no_argument,       0, 'B' },
         { "debug",    optional_argument, 0, 'g' },
         { "origin",   required_argument, 0, 'O' },
@@ -979,6 +1112,11 @@ int  main (int  argc, char **argv)
             case 1004: opt.symbols_all = 1;   break;
             case 1006: opt.v32x = 1;          break;
             case 1007: opt.v32x_data = strtol (optarg, NULL, 0);  opt.v32x_data_set = 1;  break;
+            case 1010: opt.rom_xml = optarg;      break;
+            case 1011: opt.rom_xml_opt = optarg;  break;
+            case 1012: opt.build_scripts = 1;  opt.script_formats = optarg;  break;
+            case 1013: opt.build_scripts = -1;    break;
+            case 1014: opt.script_dir = optarg;   break;
             case 1005:
             {
                 char  *spec = malloc (strlen (optarg) + 2);
@@ -1193,6 +1331,62 @@ int  main (int  argc, char **argv)
     {
         fprintf (stderr, "v32as: -MD needs -MT TARGET (there is no output file name to use)\n");
         return (2);
+    }
+
+    // a v32as started by a build script leaves the scripts alone (they are the file being run)
+    if (opt.build_scripts > 0 && getenv (BS_ENV_GUARD) != NULL)
+    {
+        opt.build_scripts = -1;
+    }
+
+    if (opt.rom_xml || opt.rom_xml_opt || opt.build_scripts > 0)
+    {
+        const char  *bad;
+        int          k;
+
+        if (opt.standard)
+        {
+            fprintf (stderr, "v32as: --rom-xml, --rom-xml-opt and --build-scripts are not part of the official assembler (--standard)\n");
+            return (2);
+        }
+
+        if (!opt.binary || opt.output == NULL || opt.object || opt.v32x || opt.origin_set)
+        {
+            fprintf (stderr, "v32as: --rom-xml and --build-scripts need a BIOS or cartridge VBIN written to a file "
+                             "(give -o FILE or a single input file; not with -C, -T, -n, -E, -O or --v32x)\n");
+            return (2);
+        }
+
+        if (opt.build_scripts > 0)
+        {
+            if (nfiles == 0)
+            {
+                fprintf (stderr, "v32as: --build-scripts needs source files\n");
+                return (2);
+            }
+
+            for (k = 0; k < nfiles; k++)
+            {
+                if (strcmp (files[k], "-") == 0)
+                {
+                    fprintf (stderr, "v32as: --build-scripts needs source files (not STDIN)\n");
+                    return (2);
+                }
+            }
+
+            if (opt.script_formats == NULL)
+            {
+                opt.script_formats = "sh,bat";
+            }
+
+            bad = bs_bad_format (opt.script_formats);
+
+            if (bad != NULL)
+            {
+                fprintf (stderr, "v32as: unknown build script format '%s' (use sh, bat or sh,bat)\n", bad);
+                return (2);
+            }
+        }
     }
 
     if (opt.map != NULL)                // loaded now: errors and warnings use it too
@@ -1594,6 +1788,18 @@ int  main (int  argc, char **argv)
     else
     {
         fflush (stdout);
+    }
+
+    if (rc == 0 && opt.object && !opt.no_warn
+        && (pp_rom_title (pp) || pp_rom_version (pp) || pp_rom_resources (pp, 0) || pp_rom_resources (pp, 1)))
+    {
+        fprintf (stderr, "v32as: warning: %%title, %%version, %%texture and %%sound are not stored in an object (-C); "
+                         "they take effect where the program is assembled to a VBIN\n");
+    }
+
+    if (rc == 0 && opt.binary && (opt.rom_xml || opt.rom_xml_opt || opt.build_scripts > 0))
+    {
+        rc = rom_outputs (&opt, argv[0], files, nfiles, mopts, nmopts, incdirs, nincdirs, pp);
     }
 
     if (rc == 0 && opt.standard && opt.verbose && opt.binary)

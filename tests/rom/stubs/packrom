@@ -1,0 +1,9 @@
+#!/bin/sh
+# stands for packrom: every file the definition names must exist; writes the output named by -o
+echo "packrom $*" >> "$STUBLOG"
+[ -f "$1" ] || exit 3
+dir=$(dirname "$1")
+missing=$(grep -o 'path="[^"]*"' "$1" | sed 's/path="//;s/"$//' | while IFS= read -r f; do [ -f "$dir/$f" ] || echo "$dir/$f"; done | head -1)
+[ -z "$missing" ] || { echo "packrom: missing $missing" >&2; exit 4; }
+while [ "$1" != "-o" ] && [ $# -gt 0 ]; do shift; done
+echo ROM > "$2"

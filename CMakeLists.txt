@@ -206,6 +206,7 @@ set(V32AS_CORE_SRC
     src/asm.c
     src/tables.c
     src/pp.c
+    src/buildscript.c
     src/ppexpr.c
     src/main.c)
 file(GLOB V32AS_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/inc/*.h")
@@ -376,6 +377,10 @@ if(BUILD_TESTING)
         add_test(NAME exe_relative
                  COMMAND "${V32AS_SH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/exe_relative.sh"
                          "$<TARGET_FILE:v32as>")
+        add_test(NAME rom_tests
+                 COMMAND "${V32AS_SH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/rom_tests.sh"
+                         "$<TARGET_FILE:v32as>")
+        set_tests_properties(rom_tests PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
         add_test(NAME mancheck
                  COMMAND "${V32AS_SH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/mancheck.sh"
                          ${V32AS_MAN1} ${V32AS_MAN3} ${V32AS_MAN7})

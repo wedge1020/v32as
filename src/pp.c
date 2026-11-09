@@ -303,6 +303,14 @@ typedef struct
 }
 frame_t;
 
+// one %texture / %sound file: as written, and where it was found (or NULL)
+typedef struct
+{
+    char  *hint;
+    char  *found;
+}
+romres_t;
+
 struct pp
 {
     macro_t   *tab[HASH_SIZE];
@@ -344,6 +352,13 @@ struct pp
     size_t     capdeps;
 
     int        warn_redefine;       // warn when a macro gets a different value
+
+    // the ROM definition: %title, %version, %texture, %sound
+    char      *rom_title;
+    char      *rom_version;
+    romres_t  *rom_res[2];          // [0] textures, [1] sounds
+    size_t     nrom_res[2];
+    size_t     caprom_res[2];
 
     // multi-line macros, %rep
     smacro_t  *smtab[HASH_SIZE];
@@ -657,6 +672,21 @@ void  pp_free (pp_t *p)
         free (p -> deps[i]);
     }
 
+    for (i = 0; i < 2; i++)
+    {
+        size_t  r;
+
+        for (r = 0; r < p -> nrom_res[i]; r++)
+        {
+            free (p -> rom_res[i][r].hint);
+            free (p -> rom_res[i][r].found);
+        }
+
+        free (p -> rom_res[i]);
+    }
+
+    free (p -> rom_title);
+    free (p -> rom_version);
     free (p -> locals);
     free (p -> lhash);
     free (p -> deps);
@@ -689,6 +719,38 @@ const char  *const  *pp_deps (const pp_t *p, size_t *n)
     *n = p -> ndeps;
 
     return ((const char *const *) p -> deps);
+}
+
+const char  *pp_rom_title (const pp_t *p)
+{
+    return (p -> rom_title);
+}
+
+const char  *pp_rom_version (const pp_t *p)
+{
+    return (p -> rom_version);
+}
+
+size_t  pp_rom_resources (const pp_t *p, int sound)
+{
+    return (p -> nrom_res[sound != 0]);
+}
+
+const char  *pp_rom_resource (const pp_t *p, int sound, size_t i, const char **found)
+{
+    sound = (sound != 0);
+
+    if (i >= p -> nrom_res[sound])
+    {
+        return (NULL);
+    }
+
+    if (found != NULL)
+    {
+        *found = p -> rom_res[sound][i].found;
+    }
+
+    return (p -> rom_res[sound][i].hint);
 }
 
 static void  dep_add (pp_t *p, const char *path)
@@ -4855,6 +4917,245 @@ static int  ctx_rewrite (pp_t *p, const char *s, size_t n, buf_t *o, int report)
     return (0);
 }
 
+////////////////////////////////////////////////////////////////////////////////////////
+//
+// The ROM definition: %title "text", %version MAJOR.MINOR, %texture [NAME] "file", %sound [NAME] "file"
+//
+// They only collect what `v32as --rom-xml` / `--build-scripts` write (see buildscript.c); the assembled
+// program is the same with or without them.  NAME becomes a macro holding the resource's number in its own
+// list (textures and sounds are numbered separately, from 0, in order of first appearance; the same file named
+// again keeps its number), the value the program passes to select_texture / select_sound.
+//
+#define ROM_TITLE_MAX  63               // the cartridge header has room for 63 characters and a terminator
+
+// where a resource file is: next to the file holding the directive, then the -I directories (what datafile does)
+static char  *rom_find (pp_t *p, frame_t *f, const char *path)
+{
+    const char  *slash = strrchr (f -> name, '/');
+    char        *cand;
+    FILE        *fp;
+    int          d;
+
+    if (path[0] == '/')
+    {
+        fp = fopen (path, "rb");
+
+        if (fp != NULL)
+        {
+            fclose (fp);
+            return (xstrndup (path, strlen (path)));
+        }
+
+        return (NULL);
+    }
+
+    cand = join_path (f -> name, slash ? (size_t) (slash - f -> name) : 0, path);
+    fp   = fopen (cand, "rb");
+
+    if (fp != NULL)
+    {
+        fclose (fp);
+        return (cand);
+    }
+
+    free (cand);
+
+    for (d = 0; d < p -> nincdirs; d++)
+    {
+        cand = join_path (p -> incdirs[d], strlen (p -> incdirs[d]), path);
+        fp   = fopen (cand, "rb");
+
+        if (fp != NULL)
+        {
+            fclose (fp);
+            return (cand);
+        }
+
+        free (cand);
+    }
+
+    return (NULL);
+}
+
+static int  rom_version_ok (const char *v)
+{
+    size_t  i = 0;
+    size_t  digits = 0;
+
+    for (; isdigit ((unsigned char) v[i]); i++)  { digits++; }
+
+    if (digits == 0 || v[i] != '.')
+    {
+        return (0);
+    }
+
+    for (digits = 0, i++; isdigit ((unsigned char) v[i]); i++)  { digits++; }
+
+    return (digits > 0 && v[i] == 0);
+}
+
+static void  rom_set_text (pp_t *p, frame_t *f, size_t dstart, char **slot, char *value, const char *what)
+{
+    if (*slot != NULL && strcmp (*slot, value) != 0 && p -> warn_redefine)
+    {
+        pp_warning_at (p, f -> line, (int) dstart + 1, "%%%s changes the %s from \"%s\" (the last one wins)", what, what, *slot);
+    }
+
+    free (*slot);
+    *slot = value;
+}
+
+static void  do_rom_directive (pp_t *p, frame_t *f, const char *name, const char *s, size_t n, size_t j, size_t dstart)
+{
+    if (dir_is (p, name, "title"))
+    {
+        char  *t = expect_string (p, s, n, &j, "the title is missing");
+
+        if (t == NULL)
+        {
+            return;
+        }
+
+        if (!expect_eol (p, s, n, j))
+        {
+            free (t);
+            return;
+        }
+
+        if (t[0] == 0)
+        {
+            pp_error (p, (int) dstart + 1, "the title is empty");
+            free (t);
+            return;
+        }
+
+        if (strlen (t) > ROM_TITLE_MAX)
+        {
+            size_t  cut = ROM_TITLE_MAX;
+
+            while (cut > 0 && ((unsigned char) t[cut] & 0xC0) == 0x80)      // not in the middle of a UTF-8 character
+            {
+                cut--;
+            }
+
+            pp_warning_at (p, f -> line, (int) dstart + 1, "the title is longer than %d characters; it is cut to \"%.*s\"",
+                           ROM_TITLE_MAX, (int) cut, t);
+            t[cut] = 0;
+        }
+
+        rom_set_text (p, f, dstart, &p -> rom_title, t, "title");
+    }
+    else if (dir_is (p, name, "version"))
+    {
+        size_t  b = skip_ws (s, n, j);
+        char   *v;
+
+        if (b < n && s[b] == '"')
+        {
+            v = expect_string (p, s, n, &j, "the version is missing");
+
+            if (v == NULL || !expect_eol (p, s, n, j))
+            {
+                free (v);
+                return;
+            }
+        }
+        else
+        {
+            size_t  e = find_comment (s, n, b);
+
+            while (e > b && is_ws ((unsigned char) s[e - 1]))
+            {
+                e--;
+            }
+
+            if (e == b)
+            {
+                pp_error (p, (int) b + 1, "the version is missing");
+                return;
+            }
+
+            v = xstrndup (s + b, e - b);
+        }
+
+        if (!rom_version_ok (v))
+        {
+            pp_error (p, (int) dstart + 1, "the version \"%s\" is not of the form MAJOR.MINOR (digits, a dot, digits) that packrom accepts", v);
+            free (v);
+            return;
+        }
+
+        rom_set_text (p, f, dstart, &p -> rom_version, v, "version");
+    }
+    else
+    {
+        int     sound = dir_is (p, name, "sound");
+        char   *id    = NULL;
+        char   *hint;
+        size_t  b = skip_ws (s, n, j);
+        size_t  r;
+
+        if (b < n && is_ident_start ((unsigned char) s[b]))
+        {
+            id = expect_ident (p, s, n, &j, "expected a name");
+        }
+
+        hint = expect_string (p, s, n, &j, "the file name is missing (expected [NAME] \"file\")");
+
+        if (hint == NULL || !expect_eol (p, s, n, j))
+        {
+            free (id);
+            free (hint);
+            return;
+        }
+
+        if (hint[0] == 0)
+        {
+            pp_error (p, (int) dstart + 1, "the file name of the %s is empty", name);
+            free (id);
+            free (hint);
+            return;
+        }
+
+        for (r = 0; r < p -> nrom_res[sound] && strcmp (p -> rom_res[sound][r].hint, hint) != 0; r++)
+        {
+        }
+
+        if (r == p -> nrom_res[sound])                       // the first time this file is named
+        {
+            if (r == p -> caprom_res[sound])
+            {
+                p -> caprom_res[sound] = r ? r * 2 : 8;
+                p -> rom_res[sound]    = xrealloc (p -> rom_res[sound], p -> caprom_res[sound] * sizeof (romres_t));
+            }
+
+            p -> rom_res[sound][r].hint  = hint;
+            p -> rom_res[sound][r].found = rom_find (p, f, hint);
+            p -> nrom_res[sound]++;
+
+            if (p -> rom_res[sound][r].found == NULL)
+            {
+                pp_warning_at (p, f -> line, (int) dstart + 1, "cannot find the %s file \"%s\" (next to %s or in the -I directories)",
+                               sound ? "sound" : "texture", hint, f -> name);
+            }
+        }
+        else
+        {
+            free (hint);
+        }
+
+        if (id != NULL)
+        {
+            char  num[24];
+
+            snprintf (num, sizeof (num), "%u", (unsigned) r);
+            macro_set (p, id, num);
+        }
+
+        free (id);
+    }
+}
+
 static void  directive (pp_t *p, frame_t *f, const char *s, size_t n, size_t dstart)
 {
     size_t  i = skip_ws (s, n, dstart + 1);
@@ -5255,6 +5556,11 @@ static void  directive (pp_t *p, frame_t *f, const char *s, size_t n, size_t dst
     else if (!p -> standard && dir_is (p, name, "pragma"))
     {
         do_pragma (p, f, s, n, j, dstart);
+    }
+    else if (!p -> standard && (dir_is (p, name, "title") || dir_is (p, name, "version")
+                                || dir_is (p, name, "texture") || dir_is (p, name, "sound")))
+    {
+        do_rom_directive (p, f, name, s, n, j, dstart);
     }
     else if (!p -> standard && dir_is (p, name, "push"))
     {

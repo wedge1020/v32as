@@ -11,7 +11,7 @@ tables. The tools are `bin/v32as` (the assembler) and `bin/v32asld` (the linker 
 Contents: [Build, install, test](#build-install-and-test) · [Usage](#usage) · [Option reference](#option-reference) ·
 [Output files](#output-files) · [Objects and the linker](#objects-and-the-linker) · [The language](#the-language) ·
 [`--standard`](#--standard-the-official-assembler-exactly) · [Preprocessor](#preprocessor) ·
-[Internal registers](#internal-registers-extension) · [Verification](#verification) · [License](#license) ·
+[Cartridge definition and build scripts](#cartridge-definition-and-build-scripts) · [Internal registers](#internal-registers-extension) · [Verification](#verification) · [License](#license) ·
 [History and compatibility](#history-and-compatibility)
 
 Manual pages are in `man/`: `v32as(1)`, `v32asld(1)`, `v32as-language(7)`, `v32as-inc(3)`, `v32as-control(3)`.
@@ -43,7 +43,7 @@ pages, `docs/` design notes, `tests/`, `experiments/`; `make` puts generated fil
 
 ```
     v32as [-b|-c|-O ADDR] [-o FILE] [-g[MODE]] [--map FILE] [-r FILE] [-w] [-D NAME[=VAL]] [-U NAME] [-I DIR]
-          [--standard] [-T|-n] [-E [-P]] [-s] [-v] [FILE...|-]
+          [--rom-xml FILE] [--build-scripts[=sh,bat]] [--standard] [-T|-n] [-E [-P]] [-s] [-v] [FILE...|-]
 ```
 
 By default `v32as FILE.asm` does what the official `assemble FILE.asm` does: it writes `FILE.vbin`,
@@ -123,6 +123,19 @@ This is the single list of options of `v32as`. `v32as --help` prints the same li
 - `-Wmarkers` (off by default; `-Wno-markers`) warns about a `;@src` whose `FILE:LINE` is malformed (no `:`, a line that is not a number >= 1,
   nothing after `;@src`), a `;@var` (no NAME or no `loc=`), a `;@scope` (not `{` or `}`), an unbalanced `;@scope }` and a block left open.
   Such a `;@src` is treated as `;@src -` (entry `-,0`): no source is better than a wrong line. `-w` silences it.
+
+### ROM definition and build scripts
+
+All of these are extensions (an error under `--standard`) and need a BIOS or cartridge VBIN written to a file (not `-C`, `-T`, `-n`, `-E`,
+`-O`, `--v32x` or STDIN). Nothing is written unless one of them is given: a plain `v32as FILE.asm` still writes only `FILE.vbin`.
+The whole feature is described in [Cartridge definition and build scripts](#cartridge-definition-and-build-scripts).
+
+- `--rom-xml FILE` also writes the ROM definition `packrom` reads, from the source's `%title`, `%version`, `%texture` and `%sound`.
+- `--rom-xml-opt FILE` writes the same for the build made from `v32opt`'s output (binary `NAMEOpt.vbin`, title `<title> [optimized]`).
+- `--build-scripts[=FORMATS]` writes `Make.sh` and `Make.bat` (FORMATS: `sh`, `bat` or `sh,bat`, the default) next to the first source (in its parent
+  for a `src/` + `obj/` layout), and the definitions they use (`NAME.xml`, `NAMEOpt.xml`) unless `--rom-xml` names the first.
+- `--no-build-scripts` never writes them (the scripts pass it to the `v32as` they run; so does the environment variable `V32AS_BUILD_SCRIPT`).
+- `--build-script-dir DIR` writes the scripts in DIR (which must exist) instead.
 
 ### Compatibility and diagnostics
 
@@ -379,6 +392,8 @@ an error (the official tool lets it pass; `--standard` does too, with a warning)
   `%include` of it a no-op.
 - **Command line**: `-D NAME[=VALUE]` (value defaults to 1), `-U NAME`, `-I DIR`, `-E` (print the
   preprocessed source with `# LINE "FILE"` markers, `-P` without them).
+- **`%title`, `%version`, `%texture`, `%sound`**: the ROM definition, for `--rom-xml` and `--build-scripts`; see
+  [Cartridge definition and build scripts](#cartridge-definition-and-build-scripts).
 - **`%idefine`, `%xdefine`, `%ixdefine`**: a case-insensitive define; a define whose value is expanded
   now rather than where it is used; both.
 
@@ -441,6 +456,86 @@ recursion stops with an error). `%include` nesting is limited to 20 levels and a
 Errors from inside an expansion are reported at the line of the invocation with a
 `note: in expansion of macro 'X' (defined at file:line)`; `-g` also attributes the generated code to
 the invocation.
+
+## Cartridge definition and build scripts
+
+A cartridge is a program plus the textures and sounds it uses, packed by `packrom` from an XML definition. A program written in C
+(`v32cc`) says what goes into the ROM with `#texture`, `#sound`, `#title` and `#version`; `v32as` has the same four as preprocessor
+directives, and can write the definition and the scripts that build the cartridge. All of it is an extension (not under `--standard`),
+and it changes nothing in the assembled program.
+
+```
+%title   "Space Rocks"            ; the name in the cartridge (at most 63 characters; the last %title wins)
+%version 1.2                      ; MAJOR.MINOR, digits.digits (packrom accepts nothing else: an error otherwise)
+%texture TEX_FONT  "gfx/font.png" ; TEX_FONT becomes the number of this texture: 0, 1, ... in order of appearance
+%texture TEX_SHIP  "gfx/ship.png"
+%texture           "gfx/old.vtex" ; the name is optional
+%sound   SND_BOOM  "snd/boom.wav" ; sounds are numbered on their own, from 0
+
+    mov R0, TEX_SHIP              ; the number select_texture takes
+    out GPU_SelectedTexture, R0
+```
+
+- `NAME` is an object-like macro holding the number, so it works wherever a number does (`mov R0, TEX_SHIP`, `%if`, `%eval`). Textures and
+  sounds are numbered separately, in the order their files first appear; naming the same file again gives the same number. This is the numbering
+  `packrom` gives the entries of the definition, so the program and the cartridge agree.
+- The file is looked for next to the source file holding the directive, then in the `-I` directories (what `datafile` does); the
+  name as written goes into the definition. A file that is not found is a warning (the script then uses the name as written).
+- Directives in a skipped `%if` block, or in a macro that is never expanded, count for nothing; inside an `%include`d file they work, so a
+  shared `resources.inc` is a good place for them.
+- With `-C` (objects) the directives are accepted but not stored: a warning says so. Give them in the source of the final `v32as` run.
+
+**`--rom-xml FILE`** writes the definition after a successful assembly:
+
+```
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<rom-definition version="1.0">
+    <rom type="cartridge" title="Space Rocks" version="1.2" />
+    <binary path="game.vbin" />
+    <textures>
+        <texture path="font.vtex" />
+        <texture path="ship.vtex" />
+        <texture path="gfx/old.vtex" />
+    </textures>
+    <sounds>
+        <sound path="boom.vsnd" />
+    </sounds>
+</rom-definition>
+```
+
+The type is `bios` with `-b`. Paths are relative to the XML file. A `.png` texture or `.wav` sound is named as the `.vtex` / `.vsnd` file
+that `png2vircon` / `wav2vircon` make from it, placed next to the XML (two with the same base name get `_2`, `_3`, ...); any other file is
+named as it is, by its path from the XML. Without `%title` the title is the output's name, without `%version` it is `1.0`. Text is
+escaped (`&amp;` and so on).
+
+**`--build-scripts`** writes `Make.sh` and `Make.bat`, which rebuild the cartridge from the sources, from the optimizer on:
+
+1. **Optimize**: `v32as -E -P` writes the preprocessed source (`FILEPre.asm`), then `v32opt -O3 FILEPre.asm -o FILEOpt.asm`; only when `v32opt` is on the
+   `PATH` (or `V32OPT` names it) and `NO_OPT` is not set. `V32OPT_FLAGS` replaces `-O3`. The optimizer gets the preprocessed text because it does not
+   know `%macro`, `%if` or `%rep`: it reads every branch as code that runs in turn, and it deleted a `mov` that the `%else` branch "overwrote".
+2. **Assemble**: `v32as` again, with the options of the run that wrote the script (`-b`/`-c`, `-D`, `-U`, `-I`, `-w`, `-W...`, `-g`, `--map`)
+   plus `--rom-xml` / `--rom-xml-opt`, so the definitions follow the `%title` and `%texture` lines on every build; then the same for `FILEOpt.asm`.
+3. **Convert**: `png2vircon IN.png -o OUT.vtex` and `wav2vircon IN.wav -o OUT.vsnd` for each resource that needs it.
+4. **Pack**: `packrom NAME.xml -o bin/NAME.v32`, and `packrom NAMEOpt.xml -o bin/NAMEOpt.v32`.
+
+The optimized cartridge is a bonus: if `v32opt` fails, or its output does not assemble, the script says so and still builds `bin/NAME.v32`.
+With more than one source file there is no optimized build. `v32opt` is built for compiler output (`__function_NAME:` labels): on hand-written
+code it mostly does peephole work, and it calls `-O3` aggressive, so compare the two cartridges before trusting the `Opt` one. `V32AS`, `V32OPT`, `V32OPT_FLAGS`, `PACKROM`, `PNG2VIRCON` and `WAV2VIRCON` name tools that are not on the `PATH`. Paths in the
+scripts are relative to the script's directory, and `Make.sh` changes to it itself, so it can be run from anywhere. A script ends with
+`BUILD SUCCESSFUL` (exit 0) or `BUILD FAILED` (exit 1).
+
+A script in the middle of a build is never rewritten, and a script you wrote is never replaced:
+
+- A script carries the line `Generated by v32as` as a comment of its own (`# ` or `REM `). A `Make.sh` or `Make.bat` without it, including one
+  written by `v32cc`, is left alone with a warning (`--no-build-scripts` silences it). Delete the line from a generated script to keep your edits.
+- The scripts call `v32as` with `--no-build-scripts` and set `V32AS_BUILD_SCRIPT=1`, which `v32as` treats the same way, so a `v32as` started from
+  inside a build (by a wrapper, or a Makefile calling the script) cannot rewrite the script that is running.
+- A script whose text would not change is not touched at all. One that has to change is written to a temporary file and renamed over the old
+  one, so a shell that is executing the old `Make.sh` keeps reading the old text. (`cmd.exe` reads a `.bat` by position, so for `Make.bat`
+  the first two points are what protect it.)
+
+The tests are in `tests/rom_tests.sh` (`make test`), with stand-ins for `packrom`, `png2vircon`, `wav2vircon` and `v32opt`; `Make.bat` was
+checked by reading, not by running it on Windows.
 
 ## Internal registers (extension)
 

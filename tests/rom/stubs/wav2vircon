@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "wav2vircon $*" >> "$STUBLOG"; [ -f "$1" ] || exit 3; echo SND > "$3"

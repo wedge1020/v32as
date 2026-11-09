@@ -306,6 +306,37 @@ and one of
 .B __ORIGIN__
 or
 .BR __NONE__ .
+.TP
+.B "%title \(dqtext\(dq"
+.TQ
+.B "%version MAJOR.MINOR"
+.TQ
+.B "%texture [NAME] \(dqfile\(dq"
+.TQ
+.B "%sound [NAME] \(dqfile\(dq"
+The ROM definition: the name and version of the cartridge, and the images and sounds
+that go into it.
+They change nothing in the program; they are what
+.B v32as \-\-rom\-xml
+and
+.B v32as \-\-build\-scripts
+write (see
+.BR v32as (1)).
+.B NAME
+is defined as the number of the entry in its own list (textures and sounds separately,
+from 0, in order of first appearance; the same file again keeps its number), the value
+the program gives to
+.B select_texture
+or
+.BR select_sound .
+The file is looked for next to the file with the directive, then in the
+.B \-I
+directories.
+The title is cut to 63 characters; the last
+.B %title
+and
+.B %version
+win.
 .PP
 Limits: 64 levels of macro expansion, about 4 million replayed lines per run, 20
 levels of

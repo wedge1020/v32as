@@ -31,7 +31,7 @@ SRC      = src
 INC      = inc
 BUILD    = build
 override CFLAGS += -I$(INC) -I$(BUILD)
-OBJ      = $(addprefix $(BUILD)/,parser.tab.o lexer.o asm.o tables.o pp.o ppexpr.o main.o)
+OBJ      = $(addprefix $(BUILD)/,parser.tab.o lexer.o asm.o tables.o pp.o ppexpr.o buildscript.o main.o)
 
 READLINE ?= auto
 ifeq ($(READLINE),auto)
@@ -93,6 +93,7 @@ $(BUILD)/%.o: $(SRC)/%.c $(BUILD)/parser.tab.h $(HDRS) | $(BUILD)
 test: all
 	@sh tests/run_tests.sh bin/$(PROJ) bin/v32asld
 	@sh tests/exe_relative.sh bin/$(PROJ)
+	@sh tests/rom_tests.sh bin/$(PROJ)
 
 # Where install puts things.  Without PREFIX the tools go to ~/bin and the man pages to ~/man
 # (what man-db finds for a ~/bin in PATH); with PREFIX=/usr/local (or /usr, /opt/v32as ...) the
