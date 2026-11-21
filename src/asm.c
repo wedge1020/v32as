@@ -36,6 +36,7 @@ static void  *xrealloc (void *ptr, size_t size)
         exit    (2);
     }
 
+    heapstat_sample ();             // --stats on the console (inc/heapstat.h); nothing elsewhere
     return (p);
 }
 

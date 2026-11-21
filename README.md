@@ -153,6 +153,9 @@ The whole feature is described in [Cartridge definition and build scripts](#cart
   official stage messages.
 - `--stats` prints v32as's own heap use on STDERR at the end: the high-water mark and what is alive then, in bytes and 4-byte words, the same after
   preprocessing (for a streamed file, after assembling it too), and the allocation count (counted at the allocator calls; "not available" where the C library cannot give a block's size).
+  Built with `v32cc` (v32nix, `__V32CC__`) it prints words instead, from the C library's allocator (`v32_heap_info`): the **peak break** (the heap's size, holes
+  and 3-word headers included, which is what a process slot has to hold; sampled after every allocation v32as makes, so a lower bound, as the library keeps no
+  high-water mark), and the words in use, free and in the largest hole after preprocessing (after assembling, for a streamed file) and at the end.
 - `-h, --help`, `-V, --version`.
 
 ## Output files

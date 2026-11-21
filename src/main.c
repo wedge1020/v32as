@@ -128,7 +128,8 @@ static void  usage (FILE *fp)
         "                       DATASYM+N references (kind V, address column = N)\n"
         "      --symbols-all    with --symbols: add 'function.local' labels, global_* and DATASYM+N variables\n"
         "      --stats          at the end, print v32as's own heap use on stderr: the high-water mark and what\n"
-        "                       is alive then, in bytes and 4-byte words (and after preprocessing)\n"
+        "                       is alive then, in bytes and 4-byte words (and after preprocessing); on\n"
+        "                       v32nix, in words, from the C library's allocator (peak break, used, free)\n"
         "  -MD, -MMD            write the files read (%%include, datafile) as a Makefile rule to\n"
         "                       OUTPUT with a .d extension; -MF FILE names it, -MT TARGET the target,\n"
         "                       -MP adds an empty rule for each dependency\n"
@@ -509,6 +510,33 @@ static int  repl (asm_t *a, pp_t *pp)
 // --stats: this program's own heap use (inc/heapstat.h).  A word is 4 bytes here; on v32nix a character and a pointer
 // are one word each, so the host's figure is a guide to the console's, not the console's
 //
+#if V32AS_HEAPWORDS
+heapwords_t  heapwords;
+
+static void  report_stats (void)
+{
+    int  start, end, used, fre, largest;
+
+    v32_heap_info (&start, &end, &used, &fre, &largest);
+    heapstat_sample ();
+
+    if (used > heapwords.peak_used)
+    {
+        heapwords.peak_used = used;
+    }
+
+    // all in words.  "peak break": the highest size the heap (holes and 3-word headers included) was seen to have, sampled after
+    // each of v32as's allocations: a lower bound, and the number to hold against the slot's heap.  "used", "free", "largest":
+    // the allocator's own count of the words in live blocks, in holes, and in the biggest hole.  "peak used" is the larger of
+    // the two used figures taken (after preprocessing and now), not a high-water mark.
+    fprintf (stderr, "v32as: heap (words): peak break %d (heap start %d, break now %d); "
+                     "after preprocessing: used %d, free %d, largest hole %d, break %d; "
+                     "now: used %d, free %d, largest hole %d; peak used (of the two) %d\n",
+             heapwords.peak_break, start, end + 1 - start,
+             heapwords.mark_used, heapwords.mark_free, heapwords.mark_largest, heapwords.mark_break,
+             used, fre, largest, heapwords.peak_used);
+}
+#else
 static void  report_stats (void)
 {
     heapstat_t  h = heapstat_get ();
@@ -525,6 +553,7 @@ static void  report_stats (void)
              h.peak, (h.peak + 3) / 4, h.live, (h.live + 3) / 4, h.mark_live, (h.mark_live + 3) / 4,
              h.mark_peak, (h.mark_peak + 3) / 4, h.allocs, h.frees);
 }
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////////////
 //
@@ -1231,7 +1260,7 @@ int  main (int  argc, char **argv)
             case 1003: opt.symbols = optarg;  break;
             case 1004: opt.symbols_all = 1;   break;
             case 1006: opt.v32x = 1;          break;
-            case 1008: opt.stats = 1;         break;
+            case 1008: opt.stats = 1; heapstat_begin ();   break;
             case 1007: opt.v32x_data = strtol (optarg, NULL, 0);  opt.v32x_data_set = 1;  break;
             case 1010: opt.rom_xml = optarg;      break;
             case 1011: opt.rom_xml_opt = optarg;  break;

@@ -310,6 +310,11 @@ and the number of allocations.
 The figures count the calls v32as makes to the C library's allocator; they are not available
 (and the option says so) where the library cannot report the size of a block.
 On a machine where a character or a pointer is a word they are a guide, not that machine's numbers.
+Built with
+.B v32cc
+(for v32nix) the option instead prints words, from the C library's allocator:
+the peak size of the heap (the break, with its holes and headers; sampled after each allocation v32as makes, so a lower bound),
+and the words in use, free and in the largest hole after preprocessing and at the end.
 .TP
 .BR \-MD ", " \-MMD
 Write the files read (the sources,

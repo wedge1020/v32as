@@ -50,9 +50,74 @@ static heapstat_t  heapstat_get (void)
     return (h);
 }
 
+#if !defined(__V32CC__)
 static void  heapstat_mark (void)
 {
 }
+#endif
+#endif
+
+// On the console (v32cc, v32nix), --stats reads the allocator of the C library instead (libc/stdlib.c), in words: v32_heap_info
+// gives the words in use, free and in the largest hole (a walk over every block, so only at the end of preprocessing and at the end);
+// the break (sbrk (0)) is the size of the heap including its holes and headers, which is what a v32nix process slot has to hold,
+// and it is sampled after every allocation that v32as's own xrealloc makes (heapstat_sample): the library does not keep a
+// high-water mark, so this is a lower bound (a stdio buffer or a lexer buffer allocated and trimmed between two samples is not
+// seen).  The state lives in main.c (this file has no .c of its own there).
+#if !V32AS_HEAPSTAT && defined(__V32CC__)
+#define V32AS_HEAPWORDS 1
+
+#include <unistd.h>
+
+typedef struct
+{
+    int  on;                        // --stats was given: sample
+    int  start;                     // the heap's first word (v32_heap_info)
+    int  peak_break;                // the highest break seen, minus start, in words
+    int  mark_used, mark_free, mark_largest, mark_break;    // at the end of preprocessing (heapstat_mark)
+    int  peak_used;                 // the larger of the used words at the mark and at the end
+}
+heapwords_t;
+
+extern heapwords_t  heapwords;
+
+static void  heapstat_sample (void)
+{
+    int  b;
+
+    if (heapwords.on)
+    {
+        b = (int) sbrk (0) - heapwords.start;
+
+        if (b > heapwords.peak_break)
+        {
+            heapwords.peak_break = b;
+        }
+    }
+}
+
+static void  heapstat_begin (void)
+{
+    heapwords.on = 1;
+    v32_heap_info (&heapwords.start, NULL, NULL, NULL, NULL);
+    heapstat_sample ();
+}
+
+static void  heapstat_mark (void)
+{
+    int  e;
+
+    if (heapwords.on)
+    {
+        v32_heap_info (NULL, &e, &heapwords.mark_used, &heapwords.mark_free, &heapwords.mark_largest);
+        heapwords.mark_break = e + 1 - heapwords.start;
+        heapwords.peak_used  = heapwords.mark_used;
+        heapstat_sample ();
+    }
+}
+#else
+// (the host's counting wrappers, and a build with no counting at all, have no use for these)
+#define heapstat_sample()   ((void) 0)
+#define heapstat_begin()    ((void) 0)
 #endif
 
 #if V32AS_HEAPSTAT

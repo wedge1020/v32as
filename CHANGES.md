@@ -29,6 +29,11 @@ README's "History and compatibility" section and the preprocessor phases 1 to 3 
 - **Fix (heapstat link)**: with `V32AS_HEAPSTAT` 0, `heapstat_get` / `heapstat_mark` are static stubs in `inc/heapstat.h`, so a build
   without `src/heapstat.c` (v32nix builds a fixed list of sources) links; `__linux__` counts only with `__GNUC__` and without `__V32CC__`;
   `V32AS_NO_HEAPSTAT` still forces it off.
+- **`--stats` on the console** (`__V32CC__`, `inc/heapstat.h`, no new source file): words, from libc's `v32_heap_info` (used, free, largest hole, heap start/end)
+  after preprocessing (after assembling, for a streamed file) and at the end, and the **peak break** (`sbrk (0)` minus the heap's start, sampled after every
+  `xrealloc`: a lower bound, as libc keeps no high-water mark; stdio and lexer buffers between two samples are not seen). `peak used` is only the larger of the two
+  `used` figures. The host path is unchanged. Measured on v32nix in v32sim (the current `v32as.x`, 147 906 words, on the host's `ls2.s`: peak break **91 331** words, the result byte-identical to the host-built `ls2.x`, and the same
+  from `cc -S` run on the system); with streaming off, 301 756. The host trace replayed through libc's allocator with word sizes gave 91 812 and 302 239 (original, VA-7/8/9 all off: ~399 K).
 - Not done: VA-10 skipped.
 
 ## 2026-11-09: ROM definition directives, `--rom-xml`, `--build-scripts`
