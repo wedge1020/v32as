@@ -51,6 +51,11 @@ void         pp_stream_begin (pp_t *p, const char *name);
 unsigned     pp_stream_line  (pp_t *p, const char *line, size_t len, int lineno);
 int          pp_pending      (const pp_t *p);       // inside %macro / %rep / %if: more input is expected
 
+// Instead of accumulating the output text and its line map, hand each output line (without its newline) and the place it came from to
+// SINK as it is produced (NULL: accumulate again).  The text and location are valid during the call only.  pp_output stays empty then.
+typedef void  (*pp_sink_t) (void *ud, const char *text, size_t len, const srcloc_t *loc);
+void         pp_set_sink    (pp_t *p, pp_sink_t sink, void *ud);
+
 // Results
 const char     *pp_output   (const pp_t *p, size_t *len);
 const srcloc_t *pp_linemap  (const pp_t *p, size_t *nlines);

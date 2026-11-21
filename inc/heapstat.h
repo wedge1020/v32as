@@ -17,7 +17,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(V32AS_NO_HEAPSTAT) && (defined(__GLIBC__) || defined(__APPLE__) || defined(__linux__))
+// (glibc: __GLIBC__ once a library header is in, as stdlib.h above; macOS; musl and other Linux libraries have no marker of their own,
+// so __linux__ counts only with a GNU-compatible compiler that is not v32cc.  v32cc's own builds, and any other, can say V32AS_NO_HEAPSTAT.)
+#if !defined(V32AS_NO_HEAPSTAT) && !defined(__V32CC__) \
+    && (defined(__GLIBC__) || defined(__APPLE__) || (defined(__linux__) && defined(__GNUC__)))
 #define V32AS_HEAPSTAT 1
 #else
 #define V32AS_HEAPSTAT 0
@@ -35,8 +38,22 @@ typedef struct
 }
 heapstat_t;
 
+#if V32AS_HEAPSTAT
 heapstat_t  heapstat_get   (void);
 void        heapstat_mark  (void);      // note live and peak now (a later mark replaces an earlier one)
+#else
+// no counting here: stubs, so that heapstat.c need not be built or linked (v32nix builds a fixed list of sources without it)
+static heapstat_t  heapstat_get (void)
+{
+    heapstat_t  h = { 0, 0, 0, 0, 0, 0, 0 };
+
+    return (h);
+}
+
+static void  heapstat_mark (void)
+{
+}
+#endif
 
 #if V32AS_HEAPSTAT
 void   *v32_malloc  (size_t n);

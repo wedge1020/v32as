@@ -397,3 +397,14 @@ void  v32_lex_buffer (void *scanner, char *buf, size_t size)
 {
     yy_scan_buffer (buf, size, (yyscan_t) scanner);
 }
+
+// the scanner works on one line at a time (asm_stream_line): the buffer is the caller's, and what this returns is freed with v32_lex_line_end
+void  *v32_lex_line_begin (void *scanner, char *buf, size_t size)
+{
+    return (yy_scan_buffer (buf, size, (yyscan_t) scanner));
+}
+
+void  v32_lex_line_end (void *scanner, void *state)
+{
+    yy_delete_buffer ((YY_BUFFER_STATE) state, (yyscan_t) scanner);
+}

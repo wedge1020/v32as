@@ -56,7 +56,13 @@ static char  *xstrndup (const char *s, size_t n)
 //
 void  asm_resolve (const asm_t *a, int line, const char **file, int *src_line, int *expanded)
 {
-    if (a -> map != NULL && line >= 1 && (size_t) line <= a -> nmap)
+    if (a -> sloc != NULL && line >= a -> sline && line <= a -> sline_last)
+    {
+        *file     = a -> sloc -> file;
+        *src_line = a -> sloc -> line;
+        *expanded = a -> sloc -> expanded;
+    }
+    else if (a -> map != NULL && line >= 1 && (size_t) line <= a -> nmap)
     {
         *file     = a -> map[line - 1].file;
         *src_line = a -> map[line - 1].line;
@@ -74,8 +80,45 @@ void  asm_resolve (const asm_t *a, int line, const char **file, int *src_line, i
 //
 // Diagnostics
 //
-static void  report (asm_t *a, const loc_t *loc, const char *kind, const char *fmt,
-                     va_list ap)
+// Where a diagnostic goes: STDERR, or (while the preprocessor still runs on a streamed text) a buffer that asm_stream_end writes out
+// or drops, so that the assembler's messages follow the preprocessor's and a failed preprocessor shows none of them
+static void  diag_printf (asm_t *a, const char *fmt, ...)
+{
+    va_list  ap;
+
+    if (a != NULL && a -> ddefer)
+    {
+        int  n;
+
+        va_start (ap, fmt);
+        n = vsnprintf (NULL, 0, fmt, ap);
+        va_end (ap);
+
+        if (n > 0)
+        {
+            if (a -> dlen + (size_t) n + 1 > a -> dcap)
+            {
+                a -> dcap = (a -> dlen + (size_t) n + 1) * 2;
+                a -> dbuf = xrealloc (a -> dbuf, a -> dcap);
+            }
+
+            va_start (ap, fmt);
+            vsnprintf (a -> dbuf + a -> dlen, (size_t) n + 1, fmt, ap);
+            va_end (ap);
+            a -> dlen += (size_t) n;
+        }
+    }
+    else
+    {
+        va_start (ap, fmt);
+        vfprintf (stderr, fmt, ap);
+        va_end (ap);
+    }
+}
+
+static void  cmap_note (asm_t *a, const char *file, int line);
+
+static void  report (asm_t *a, const loc_t *loc, const char *kind, const char *msg)
 {
     const char  *nfile = NULL;
     int          nline = 0;
@@ -96,31 +139,38 @@ static void  report (asm_t *a, const loc_t *loc, const char *kind, const char *f
         // a column inside macro-expanded text means nothing to the programmer
         if (expanded || loc -> first_column <= 0)
         {
-            fprintf (stderr, "%s:%d: %s: ", file, line, kind);
+            diag_printf (a, "%s:%d: %s: ", file, line, kind);
         }
         else
         {
-            fprintf (stderr, "%s:%d:%d: %s: ", file, line, loc -> first_column, kind);
+            diag_printf (a, "%s:%d:%d: %s: ", file, line, loc -> first_column, kind);
         }
     }
     else
     {
-        fprintf (stderr, "v32as: %s: ", kind);
+        diag_printf (a, "v32as: %s: ", kind);
     }
 
-    vfprintf (stderr, fmt, ap);
-    fputc    ('\n', stderr);
+    diag_printf (a, "%s\n", msg);
 
-    asm_cmap_note (nfile, nline);               // --map: the C line this assembly line came from
+    cmap_note (a, nfile, nline);                // --map: the C line this assembly line came from
 }
 
 void  asm_error (asm_t *a, const loc_t *loc, const char *fmt, ...)
 {
     va_list  ap;
+    int      n;
+    char    *msg;
 
     va_start (ap, fmt);
-    report   (a, loc, "error", fmt, ap);
+    n = vsnprintf (NULL, 0, fmt, ap);
     va_end   (ap);
+    msg = xrealloc (NULL, (size_t) (n > 0 ? n : 0) + 1);
+    va_start (ap, fmt);
+    vsnprintf (msg, (size_t) (n > 0 ? n : 0) + 1, fmt, ap);
+    va_end   (ap);
+    report   (a, loc, "error", msg);
+    free     (msg);
 
     a -> errors   = a -> errors + 1;
     a -> stmt_bad = 1;
@@ -129,6 +179,8 @@ void  asm_error (asm_t *a, const loc_t *loc, const char *fmt, ...)
 void  asm_warn (asm_t *a, const loc_t *loc, const char *fmt, ...)
 {
     va_list  ap;
+    int      n;
+    char    *msg;
 
     if (a -> no_warn)
     {
@@ -136,8 +188,14 @@ void  asm_warn (asm_t *a, const loc_t *loc, const char *fmt, ...)
     }
 
     va_start (ap, fmt);
-    report   (a, loc, "warning", fmt, ap);
+    n = vsnprintf (NULL, 0, fmt, ap);
     va_end   (ap);
+    msg = xrealloc (NULL, (size_t) (n > 0 ? n : 0) + 1);
+    va_start (ap, fmt);
+    vsnprintf (msg, (size_t) (n > 0 ? n : 0) + 1, fmt, ap);
+    va_end   (ap);
+    report   (a, loc, "warning", msg);
+    free     (msg);
 
     a -> warnings = a -> warnings + 1;
 }
@@ -1560,9 +1618,8 @@ static size_t  emit_imm (asm_t *a, const loc_t *loc, imm_t imm)
                 asm_resolve (a, loc -> first_line, &file, &line, &expanded);
 
                 a -> fix[a -> nfix].file = file;
-                a -> fix[a -> nfix].loc  = *loc;
-                a -> fix[a -> nfix].loc.first_line   = line;
-                a -> fix[a -> nfix].loc.first_column = expanded ? 0 : loc -> first_column;
+                a -> fix[a -> nfix].line = line;
+                a -> fix[a -> nfix].col  = expanded ? 0 : loc -> first_column;
             }
             a -> nfix                = a -> nfix + 1;
         }
@@ -2430,6 +2487,107 @@ static int  parse_common_buf (asm_t *a, const char *name, char *buf, size_t n, c
     return ((int) (a -> errors - before));
 }
 
+// Streaming (see v32as.h): the same as parse_common_buf, one line at a time.  Each line is parsed on its own (the grammar is line
+// oriented and no state of the parser outlives a line), by a scanner that is given the line in a buffer of ours.
+void  asm_stream_begin (asm_t *a, const char *name, size_t est_chars)
+{
+    asm_reserve (a, est_chars);
+
+    a -> cur_file    = name;
+    a -> lex_line    = 1;
+    a -> lex_col     = 1;
+    a -> lex_error   = 0;
+    a -> stmt_bad    = 0;
+    a -> line_active = 0;
+    a -> stmt_start  = a -> nwords;
+    a -> stmt_fix    = a -> nfix;
+    a -> stream      = 1;
+    a -> sfirst      = 1;
+    a -> sloc        = NULL;
+    a -> ddefer      = 1;
+    a -> dlen        = 0;
+    a -> sscanner    = v32_lex_new (a);
+
+    if (a -> sscanner == NULL)
+    {
+        a -> ddefer = 0;
+        asm_error (a, NULL, "unable to create the scanner");
+        a -> ddefer = 1;
+    }
+}
+
+void  asm_stream_line (asm_t *a, const char *text, size_t len, const srcloc_t *loc)
+{
+    void    *state;
+    size_t   k, nl = 0;
+
+    if (a -> sscanner == NULL)
+    {
+        return;
+    }
+
+    // skip a UTF-8 byte order mark
+    if (a -> sfirst && len >= 3 && (unsigned char) text[0] == 0xEF && (unsigned char) text[1] == 0xBB
+                                && (unsigned char) text[2] == 0xBF)
+    {
+        text += 3;
+        len  -= 3;
+    }
+
+    a -> sfirst = 0;
+
+    for (k = 0; k < len; k++)
+    {
+        nl += (text[k] == '\n');
+    }
+
+    if (a -> sbufcap < len + 4)
+    {
+        a -> sbufcap = len + 4 + len / 2;
+        a -> sbuf    = xrealloc (a -> sbuf, a -> sbufcap);
+    }
+
+    memcpy (a -> sbuf, text, len);
+    a -> sbuf[len]     = '\n';
+    a -> sbuf[len + 1] = 0;
+    a -> sbuf[len + 2] = 0;
+
+    a -> sloc       = loc;
+    a -> sline      = a -> lex_line;
+    a -> sline_last = a -> lex_line + (int) nl;
+    a -> lex_col    = 1;
+
+    state = v32_lex_line_begin (a -> sscanner, a -> sbuf, len + 3);
+
+    if (yyparse (a, a -> sscanner) == 2)
+    {
+        asm_error (a, NULL, "parser ran out of memory");
+    }
+
+    v32_lex_line_end (a -> sscanner, state);
+    a -> sloc = NULL;
+}
+
+void  asm_stream_end (asm_t *a, int keep_diagnostics)
+{
+    v32_lex_free (a -> sscanner);
+    a -> sscanner = NULL;
+    free (a -> sbuf);
+    a -> sbuf    = NULL;
+    a -> sbufcap = 0;
+    a -> stream  = 0;
+    a -> ddefer  = 0;
+
+    if (keep_diagnostics && a -> dlen > 0)
+    {
+        fwrite (a -> dbuf, 1, a -> dlen, stderr);
+    }
+
+    free (a -> dbuf);
+    a -> dbuf = NULL;
+    a -> dlen = a -> dcap = 0;
+}
+
 // plain text whose lines are its own (REPL lines, files assembled without preprocessing)
 int  asm_parse (asm_t *a, const char *name, const char *text, size_t len, int first_line)
 {
@@ -2465,8 +2623,12 @@ int  asm_finish (asm_t *a)
         }
         else
         {
+            loc_t  where;
+
+            where.first_line = where.last_line = f -> line;
+            where.first_column = where.last_column = f -> col;
             a -> cur_file = f -> file;
-            asm_error (a, &f -> loc, "undefined label '%s'", f -> sym -> name);
+            asm_error (a, &where, "undefined label '%s'", f -> sym -> name);
         }
     }
 
@@ -3075,7 +3237,7 @@ int  asm_cmap_load (FILE *cmap, const char *cmap_name)
 }
 
 // after a diagnostic about assembly line (file, line): where in the C source it came from
-void  asm_cmap_note (const char *file, int line)
+static void  cmap_note (asm_t *a, const char *file, int line)
 {
     char            *nf;
     const mapent_t  *hit;
@@ -3090,19 +3252,24 @@ void  asm_cmap_note (const char *file, int line)
 
     if (hit != NULL)
     {
-        fprintf (stderr, "%s:%d: note: the assembly line above was generated from here%s%s\n",
+        diag_printf (a, "%s:%d: note: the assembly line above was generated from here%s%s\n",
                  hit -> cfile, hit -> cline, hit -> func != NULL ? ", in function " : "",
                  hit -> func != NULL ? hit -> func : "");
     }
     else if ((hit = cmap_before (the_cmap, nf, line)) != NULL)
     {
-        fprintf (stderr, "%s:%d: note: the assembly line above has no source line of its own; "
+        diag_printf (a, "%s:%d: note: the assembly line above has no source line of its own; "
                          "it follows the code generated from here%s%s\n",
                  hit -> cfile, hit -> cline, hit -> func != NULL ? ", in function " : "",
                  hit -> func != NULL ? hit -> func : "");
     }
 
     free (nf);
+}
+
+void  asm_cmap_note (const char *file, int line)
+{
+    cmap_note (NULL, file, line);
 }
 
 int  asm_write_debug_map (asm_t *a, FILE *fp, dbgmode_t mode)

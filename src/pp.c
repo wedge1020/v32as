@@ -320,6 +320,9 @@ struct pp
     int        capframes;
 
     buf_t      out;
+    pp_sink_t  sink;                // output lines go here, not into out and map
+    void      *sink_ud;
+    size_t     nsunk;               // lines handed to the sink
     srcloc_t  *map;
     size_t     nmap;
     size_t     capmap;
@@ -892,6 +895,13 @@ void  pp_set_target (pp_t *p, const char *kind, unsigned base)
 unsigned  pp_errors (const pp_t *p)
 {
     return (p -> errors);
+}
+
+void  pp_set_sink (pp_t *p, pp_sink_t sink, void *ud)
+{
+    p -> sink    = sink;
+    p -> sink_ud = ud;
+    p -> nsunk   = 0;
 }
 
 const char  *pp_output (const pp_t *p, size_t *len)
@@ -2328,7 +2338,7 @@ static void  emit_line (pp_t *p, frame_t *f, const char *s, size_t n)
         return;
     }
 
-    if (p -> nmap >= MAX_OUT_LINES)
+    if ((p -> sink != NULL ? p -> nsunk : p -> nmap) >= MAX_OUT_LINES)
     {
         pp_error (p, 0, "the output is too large (more than %u lines): runaway %%rep or macro?", MAX_OUT_LINES);
         p -> halt = 1;
@@ -2370,9 +2380,22 @@ static void  emit_line (pp_t *p, frame_t *f, const char *s, size_t n)
         }
     }
 
-    buf_put (&p -> out, b.s, b.len);
-    buf_put (&p -> out, "\n", 1);
-    map_push (p, f -> name, f -> line, changed || p -> nctx > 0);
+    if (p -> sink != NULL)
+    {
+        srcloc_t  where;
+
+        where.file     = f -> name;
+        where.line     = f -> line;
+        where.expanded = changed || p -> nctx > 0;
+        p -> nsunk++;
+        p -> sink (p -> sink_ud, b.s != NULL ? b.s : "", b.len, &where);
+    }
+    else
+    {
+        buf_put (&p -> out, b.s, b.len);
+        buf_put (&p -> out, "\n", 1);
+        map_push (p, f -> name, f -> line, changed || p -> nctx > 0);
+    }
 
     free (b.s);
 }

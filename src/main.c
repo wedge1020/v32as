@@ -528,18 +528,74 @@ static void  report_stats (void)
 
 ////////////////////////////////////////////////////////////////////////////////////////
 //
+// Streaming: the assembler takes each line as the preprocessor emits it, so neither the preprocessed text nor its line map is
+// ever kept (VA-9).  Used for binary output of the last (usually only) input file, without -v or -s; otherwise the text is
+// preprocessed first and assembled after (a listing is printed as it goes and a file written as it goes, and an earlier file whose
+// preprocessing fails must leave the assembler as it was for the files after it).
+//
+typedef struct
+{
+    asm_t     *a;
+    pp_t      *pp;
+    unsigned   base;            // the preprocessor's errors before this text
+}
+stream_t;
+
+// after the first error of the preprocessor nothing of this text is assembled (it was never, when the text was kept)
+static void  stream_sink (void *ud, const char *text, size_t len, const srcloc_t *where)
+{
+    stream_t  *s = ud;
+
+    if (pp_errors (s -> pp) == s -> base)
+    {
+        asm_stream_line (s -> a, text, len, where);
+    }
+}
+
+static void  stream_begin (stream_t *s, asm_t *a, pp_t *pp, const char *name, size_t input_chars)
+{
+    s -> a    = a;
+    s -> pp   = pp;
+    s -> base = pp_errors (pp);
+
+    // the preprocessed text is about a quarter longer than v32cc's assembly (the %defines and the .local renaming)
+    asm_stream_begin (a, name, input_chars + input_chars / 4);
+    pp_set_sink (pp, stream_sink, s);
+}
+
+static void  stream_end (stream_t *s, int failed)
+{
+    pp_set_sink (s -> pp, NULL, NULL);
+    heapstat_mark ();
+    asm_stream_end (s -> a, !failed);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
 // Run one source text through the preprocessor and then (unless -E) the assembler.
 // Returns 0, or 1 if the preprocessor found errors (nothing is assembled then).
 //
 // takes text: it is freed as soon as the preprocessor is done with it, and the preprocessor's output is assembled in place, so at
 // most one copy of the program's text is alive at a time (v32nix: a linked hello world is 75 K characters, a character a word)
 static int  process_source (asm_t *a, pp_t *pp, const options_t *opt, FILE *out,
-                            const char *name, char *text, size_t len)
+                            const char *name, char *text, size_t len, int streaming)
 {
     size_t           olen;
     size_t           nmap;
     const srcloc_t  *map;
     int              failed;
+
+    if (streaming)
+    {
+        stream_t  st;
+
+        stream_begin (&st, a, pp, name, len);
+        failed = (pp_process (pp, name, text, len) != 0);
+        free (text);
+        stream_end (&st, failed);
+
+        return (failed);
+    }
 
     pp_reserve_output (pp, len + len / 2);
     {
@@ -578,13 +634,30 @@ static int  process_source (asm_t *a, pp_t *pp, const options_t *opt, FILE *out,
 }
 
 // a file, read by the preprocessor a line at a time; otherwise as process_source
-static int  process_file (asm_t *a, pp_t *pp, const options_t *opt, FILE *out, const char *name, FILE *fp)
+static int  process_file (asm_t *a, pp_t *pp, const options_t *opt, FILE *out, const char *name, FILE *fp, int streaming)
 {
     size_t           olen;
     size_t           nmap;
     const srcloc_t  *map;
     int              failed;
     long             size;
+
+    if (streaming)
+    {
+        stream_t  st;
+
+        // a file of known size gives the estimate of the output's size
+        if (fp == stdin || fseek (fp, 0, SEEK_END) != 0 || (size = ftell (fp)) < 0 || fseek (fp, 0, SEEK_SET) != 0)
+        {
+            size = 0;
+        }
+
+        stream_begin (&st, a, pp, name, (size_t) size);
+        failed = (pp_process_file (pp, name, fp) != 0) || ferror (fp);
+        stream_end (&st, failed);
+
+        return (failed);
+    }
 
     // a file of known size: the output buffer is allocated once at about its final size, not doubled (v32nix: a character is a word)
     if (fp != stdin && fseek (fp, 0, SEEK_END) == 0 && (size = ftell (fp)) > 0 && fseek (fp, 0, SEEK_SET) == 0)
@@ -1100,6 +1173,7 @@ int  main (int  argc, char **argv)
     char        *derived = NULL;
     int          nmopts = 0;
     int          pp_failed = 0;
+    int          can_stream;
     FILE        *out   = stdout;
     int          rc    = 0;
 
@@ -1532,6 +1606,9 @@ int  main (int  argc, char **argv)
                 "stage 3: running parser\nstage 4: running emitter\n");
     }
 
+    // see "Streaming" above
+    can_stream = opt.binary && !opt.preprocess && !a.verbose && !opt.step;
+
     if (nfiles == 0 || (nfiles == 1 && strcmp (files[0], "-") == 0))
     {
         if (will_repl)
@@ -1559,7 +1636,7 @@ int  main (int  argc, char **argv)
 
             a.step = 0;
 
-            if (process_source (&a, pp, &opt, out, "<stdin>", text, len))
+            if (process_source (&a, pp, &opt, out, "<stdin>", text, len, can_stream))
             {
                 rc = 1;
                 pp_failed = 1;
@@ -1590,7 +1667,7 @@ int  main (int  argc, char **argv)
             if (fp != stdin)
             {
                 // a named file goes through the preprocessor a line at a time (it is never all in memory)
-                int  failed = process_file (&a, pp, &opt, out, files[i], fp);
+                int  failed = process_file (&a, pp, &opt, out, files[i], fp, can_stream && i == nfiles - 1);
 
                 fclose (fp);
                 if (failed)
@@ -1615,7 +1692,7 @@ int  main (int  argc, char **argv)
                 continue;
             }
 
-            if (process_source (&a, pp, &opt, out, files[i], text, len))
+            if (process_source (&a, pp, &opt, out, files[i], text, len, can_stream && i == nfiles - 1))
             {
                 rc = 1;
                 pp_failed = 1;

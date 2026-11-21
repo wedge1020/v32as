@@ -147,8 +147,9 @@ typedef struct
     uint32_t     word;              // index into the output word array
     sym_t       *sym;
     uint32_t     addend;
-    const char  *file;
-    loc_t        loc;
+    const char  *file;              // where it was written (interned file name) and the line and column there:
+    int          line;              //   all an "undefined label" error needs (column 0: macro-expanded text)
+    int          col;
 }
 fixup_t;
 
@@ -294,6 +295,19 @@ typedef struct asm_ctx
     const srcloc_t  *map;
     size_t           nmap;
 
+    // streaming (asm_stream_*): the preprocessor hands over one line at a time, so there is no map; the line being parsed
+    // (line number sline .. sline_last of the text, as the lexer counts them) came from *sloc
+    const srcloc_t  *sloc;
+    int              sline, sline_last;
+    int              stream;            // between asm_stream_begin and asm_stream_end
+    int              sfirst;            // the next line is the first of the text (a byte order mark is skipped)
+    void            *sscanner;
+    char            *sbuf;              // the line being scanned: text, newline and two NUL bytes
+    size_t           sbufcap;
+    int              ddefer;            // diagnostics are held in dbuf (not yet written to STDERR)
+    char            *dbuf;
+    size_t           dlen, dcap;
+
     // where 'datafile' looks after the source file's own directory (-I, in order)
     const char **incdirs;
     int          nincdirs;
@@ -339,6 +353,13 @@ void    asm_resolve         (const asm_t *a, int line, const char **file, int *s
                              int *expanded);
 int     asm_finish          (asm_t *a);
 int     asm_write_vbin      (asm_t *a, FILE *fp);
+// Streaming: the text arrives a line at a time (the preprocessor's own lines, with the place each came from) and is assembled as it
+// comes; neither the text nor a line map is kept.  The diagnostics of the assembler are held back until asm_stream_end, so that they
+// come after the preprocessor's own (as they do when the whole text is assembled after the preprocessor is done), or are dropped
+// when the preprocessor failed (then nothing of this text is assembled, as before).  est_chars: a first estimate of the text's size.
+void    asm_stream_begin    (asm_t *a, const char *name, size_t est_chars);
+void    asm_stream_line     (asm_t *a, const char *text, size_t len, const srcloc_t *loc);
+void    asm_stream_end      (asm_t *a, int keep_diagnostics);
 int     asm_parse_map_owned (asm_t *a, const char *name, char *text, size_t len, const srcloc_t *map, size_t nmap);  // takes text (room for len + 4)
 int     asm_write_debug     (asm_t *a, FILE *fp, dbgmode_t mode);
 int     asm_write_object    (asm_t *a, FILE *fp);
@@ -418,6 +439,8 @@ void    asm_end_line        (asm_t *a);
 // lexer.l: scanner management (the generated scanner header is kept private)
 //
 void   *v32_lex_new         (asm_t *a);
+void   *v32_lex_line_begin  (void *scanner, char *buf, size_t size);   // scan one more piece of text (buf: text\n\0\0); returns what to give back
+void    v32_lex_line_end    (void *scanner, void *state);
 void    v32_lex_free        (void *scanner);
 void    v32_lex_buffer      (void *scanner, char *buf, size_t size);   // buf: text\n\0\0
 

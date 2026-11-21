@@ -61,6 +61,11 @@ a VBIN for a cartridge. (Reading STDIN, the output goes to STDOUT.)
 - Memory (2026-11-21): the names of file-local labels are noted only for `-g` and `--symbols` (and then as the mangled name only; the
   `function.local` spelling is made for `--symbols-all` alone), the line map and the output arrays are sized from the input and cut to
   size, and `--stats` reports the heap. The output is the same.
+- Memory (2026-11-21, VA-9): binary output of the last (usually only) input file is assembled as the preprocessor emits it, a line at a
+  time, so neither the preprocessed text nor its line map is kept (on v32nix: a word a character of the text and 3 words a line). The
+  assembler's own messages for that file are held back until the preprocessor is done, so they come after the preprocessor's as before, and
+  none are shown if it failed. `-E`, listings (`-T`, `-n`), `-v`, `-s`, and every input file but the last assemble the whole text after
+  the preprocessor, as before. The output is the same.
 
 Exit status: 0 on success (warnings do not change it), 1 for an assembly or preprocessor error or an unreadable input
 file, 2 for a usage error (bad or conflicting options) or an output file that cannot be written. `v32asld` uses the
@@ -147,7 +152,7 @@ The whole feature is described in [Cartridge definition and build scripts](#cart
 - `-s, --step` pauses per statement; `-v, --verbose` shows the encoded bit fields (to STDERR). Under `--standard`, `-s` does nothing and `-v` prints the
   official stage messages.
 - `--stats` prints v32as's own heap use on STDERR at the end: the high-water mark and what is alive then, in bytes and 4-byte words, the same after
-  preprocessing, and the allocation count (counted at the allocator calls; "not available" where the C library cannot give a block's size).
+  preprocessing (for a streamed file, after assembling it too), and the allocation count (counted at the allocator calls; "not available" where the C library cannot give a block's size).
 - `-h, --help`, `-V, --version`.
 
 ## Output files

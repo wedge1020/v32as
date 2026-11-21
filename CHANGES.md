@@ -17,7 +17,19 @@ README's "History and compatibility" section and the preprocessor phases 1 to 3 
 - **`--stats`**: the high-water mark and live heap of v32as itself on STDERR (`inc/heapstat.h`, `src/heapstat.c`: counting wrappers over
   malloc/calloc/realloc/free/strdup, sizes from `malloc_usable_size`/`malloc_size`; not available elsewhere).
 - Outputs are byte-identical, with and without `-g`, `--symbols`, `--symbols-all`. Tests: `tests/locals` (goldens made with the previous build).
-- Not done: VA-9 (assemble each line as the preprocessor emits it); VA-10 skipped.
+- **VA-9, streaming**: for binary output the last (usually only) input file is assembled as the preprocessor emits it
+  (`pp_set_sink`; `asm_stream_begin/line/end`), one line per `yyparse` on a reusable buffer (`v32_lex_line_begin/end`), so neither the
+  preprocessed text nor the line map is kept; the line being parsed is located by `asm_resolve` from the line's own `srcloc_t`. Forward
+  references keep file, line and column only (`fixup_t`, two words less). The assembler's messages for that file are held back and written when
+  the preprocessor is done (dropped if it failed), so order, text and exit status are as when the text was assembled afterwards; `-E`,
+  `-T`/`-n`, `-v`, `-s` and files before the last (a failed one must leave the assembler as it was) keep the whole-text path.
+  `--stats` "after preprocessing" is then after assembling too. Peak on the stand-in for `ls2` (8.6 K lines): 810 K -> 509 K bytes plain
+  (the console saves the text's characters and 3 words a line, about 199 K words), 1272 K -> 970 K with `-g --symbols`. Outputs are
+  byte-identical (all tests, 3850 runs of many modes against the previous build, the stand-in and one three times its size).
+- **Fix (heapstat link)**: with `V32AS_HEAPSTAT` 0, `heapstat_get` / `heapstat_mark` are static stubs in `inc/heapstat.h`, so a build
+  without `src/heapstat.c` (v32nix builds a fixed list of sources) links; `__linux__` counts only with `__GNUC__` and without `__V32CC__`;
+  `V32AS_NO_HEAPSTAT` still forces it off.
+- Not done: VA-10 skipped.
 
 ## 2026-11-09: ROM definition directives, `--rom-xml`, `--build-scripts`
 

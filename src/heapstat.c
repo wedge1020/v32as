@@ -134,17 +134,4 @@ void  heapstat_mark (void)
     mark_peak = peak;
 }
 
-#else
-
-heapstat_t  heapstat_get (void)
-{
-    heapstat_t  h = { 0, 0, 0, 0, 0, 0, 0 };
-
-    return (h);
-}
-
-void  heapstat_mark (void)
-{
-}
-
 #endif
