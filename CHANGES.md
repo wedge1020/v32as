@@ -5,6 +5,20 @@ listed here is described in `README.md`; this file records what each round (a se
 projects that use the assembler) added or fixed. Before round 9 the assembler had the features described in the
 README's "History and compatibility" section and the preprocessor phases 1 to 3 of `docs/PREPROCESSOR.md`.
 
+## 2026-11-21: memory use, round 2 (VA-7, VA-8, VA-11 of the v32nix proposal), `--stats`
+
+- **File-local label names are kept only when read.** The preprocessor noted every `.local` label twice (mangled and `function.local`) in a
+  table; now only for `-g` and `--symbols` (`pp_set_keep_locals`), as the mangled name and the length of its global part; `function.local` is
+  made when `--symbols-all` asks for it (`pp_local_name`), `-g` and `--symbols` without `-all` ask only whether a label is local (`pp_is_local`).
+  Nothing else reads them (errors, `-C`, `-r`, `--map` and the REPL use the assembler's own names).
+- **Arrays sized from the input.** The line map is reserved from the line count (a text) or the file size (a file) and cut to its lines after
+  preprocessing, and freed once the text is assembled; the output words and the forward references are reserved from the length of the text,
+  and `asm_finish` frees the fixups and cuts words, address list and debug records to size.
+- **`--stats`**: the high-water mark and live heap of v32as itself on STDERR (`inc/heapstat.h`, `src/heapstat.c`: counting wrappers over
+  malloc/calloc/realloc/free/strdup, sizes from `malloc_usable_size`/`malloc_size`; not available elsewhere).
+- Outputs are byte-identical, with and without `-g`, `--symbols`, `--symbols-all`. Tests: `tests/locals` (goldens made with the previous build).
+- Not done: VA-9 (assemble each line as the preprocessor emits it); VA-10 skipped.
+
 ## 2026-11-09: ROM definition directives, `--rom-xml`, `--build-scripts`
 
 - **`%title`, `%version`, `%texture`, `%sound`** (not under `--standard`): the cartridge's name and version and its images and sounds, as

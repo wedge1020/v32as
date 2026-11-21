@@ -65,6 +65,7 @@ typedef struct
     const char  *map;               // --map FILE: compiler debug file to merge into -g
     const char  *symbols;           // --symbols FILE: label table
     int          symbols_all;       // --symbols-all: also .local labels and compiler variables
+    int          stats;             // --stats: v32as's own heap use on stderr
     int          dep;               // -MD: write a dependency file
     const char  *dep_file;          // -MF FILE
     const char  *dep_target;        // -MT TARGET
@@ -126,6 +127,8 @@ static void  usage (FILE *fp)
         "                       also lists the compiler's global_* variables and\n"
         "                       DATASYM+N references (kind V, address column = N)\n"
         "      --symbols-all    with --symbols: add 'function.local' labels, global_* and DATASYM+N variables\n"
+        "      --stats          at the end, print v32as's own heap use on stderr: the high-water mark and what\n"
+        "                       is alive then, in bytes and 4-byte words (and after preprocessing)\n"
         "  -MD, -MMD            write the files read (%%include, datafile) as a Makefile rule to\n"
         "                       OUTPUT with a .d extension; -MF FILE names it, -MT TARGET the target,\n"
         "                       -MP adds an empty rule for each dependency\n"
@@ -503,6 +506,28 @@ static int  repl (asm_t *a, pp_t *pp)
 
 ////////////////////////////////////////////////////////////////////////////////////////
 //
+// --stats: this program's own heap use (inc/heapstat.h).  A word is 4 bytes here; on v32nix a character and a pointer
+// are one word each, so the host's figure is a guide to the console's, not the console's
+//
+static void  report_stats (void)
+{
+    heapstat_t  h = heapstat_get ();
+
+    if (!h.available)
+    {
+        fprintf (stderr, "v32as: --stats: heap figures are not available in this build\n");
+        return;
+    }
+
+    fprintf (stderr, "v32as: heap: peak %lu bytes (%lu words), alive now %lu bytes (%lu words); "
+                     "after preprocessing: alive %lu bytes (%lu words), peak so far %lu bytes (%lu words); "
+                     "%lu allocations, %lu frees\n",
+             h.peak, (h.peak + 3) / 4, h.live, (h.live + 3) / 4, h.mark_live, (h.mark_live + 3) / 4,
+             h.mark_peak, (h.mark_peak + 3) / 4, h.allocs, h.frees);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+//
 // Run one source text through the preprocessor and then (unless -E) the assembler.
 // Returns 0, or 1 if the preprocessor found errors (nothing is assembled then).
 //
@@ -517,9 +542,20 @@ static int  process_source (asm_t *a, pp_t *pp, const options_t *opt, FILE *out,
     int              failed;
 
     pp_reserve_output (pp, len + len / 2);
+    {
+        size_t  k, lines = 1;
+
+        for (k = 0; k < len; k++)
+        {
+            lines += (text[k] == '\n');
+        }
+        pp_reserve_lines (pp, lines + lines / 8);       // macros add some lines; the map is cut to size below
+    }
     failed = (pp_process (pp, name, text, len) != 0);
 
     free (text);
+    pp_trim_linemap (pp);
+    heapstat_mark ();
     if (!failed)
     {
         map   = pp_linemap (pp, &nmap);
@@ -536,7 +572,7 @@ static int  process_source (asm_t *a, pp_t *pp, const options_t *opt, FILE *out,
         }
     }
 
-    pp_output_clear (pp);
+    pp_output_release (pp);
 
     return (failed);
 }
@@ -554,9 +590,12 @@ static int  process_file (asm_t *a, pp_t *pp, const options_t *opt, FILE *out, c
     if (fp != stdin && fseek (fp, 0, SEEK_END) == 0 && (size = ftell (fp)) > 0 && fseek (fp, 0, SEEK_SET) == 0)
     {
         pp_reserve_output (pp, (size_t) size + (size_t) size / 2);
+        pp_reserve_lines  (pp, (size_t) size / 12 + 16);        // ~17 characters a line in v32cc's assembly; cut to size below
     }
 
     failed = (pp_process_file (pp, name, fp) != 0) || ferror (fp);
+    pp_trim_linemap (pp);
+    heapstat_mark ();
 
     if (!failed)
     {
@@ -574,7 +613,7 @@ static int  process_file (asm_t *a, pp_t *pp, const options_t *opt, FILE *out, c
         }
     }
 
-    pp_output_clear (pp);
+    pp_output_release (pp);
 
     return (failed);
 }
@@ -688,6 +727,12 @@ static const char  *define_text (void *ud, const char *name)
 static const char  *local_name (void *ud, const char *name)
 {
     return (pp_local_name ((pp_t *) ud, name));
+}
+
+// for the writers that only ask whether a label is a file-local one (no spelling is made)
+static const char  *local_is (void *ud, const char *name)
+{
+    return (pp_is_local ((pp_t *) ud, name));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -1018,6 +1063,7 @@ int  main (int  argc, char **argv)
         { "map",      required_argument, 0, 1002 },
         { "symbols",  required_argument, 0, 1003 },
         { "symbols-all", no_argument,    0, 1004 },
+        { "stats",    no_argument,       0, 1008 },
         { "force-define", required_argument, 0, 1005 },
         { "v32x",     no_argument,       0, 1006 },
         { "v32x-data", required_argument, 0, 1007 },
@@ -1111,6 +1157,7 @@ int  main (int  argc, char **argv)
             case 1003: opt.symbols = optarg;  break;
             case 1004: opt.symbols_all = 1;   break;
             case 1006: opt.v32x = 1;          break;
+            case 1008: opt.stats = 1;         break;
             case 1007: opt.v32x_data = strtol (optarg, NULL, 0);  opt.v32x_data_set = 1;  break;
             case 1010: opt.rom_xml = optarg;      break;
             case 1011: opt.rom_xml_opt = optarg;  break;
@@ -1419,6 +1466,7 @@ int  main (int  argc, char **argv)
     pp_set_standard (pp, opt.standard);
     pp_set_warnings (pp, !opt.no_warn);
     pp_set_redefine_warning (pp, !opt.no_redefine && !opt.standard);
+    pp_set_keep_locals (pp, opt.debug || opt.symbols != NULL);      // the names of file-local labels: only -g and --symbols read them
     pp_set_target   (pp, opt.bios ? "BIOS" : (opt.cart ? "CART" : (opt.origin_set ? "ORIGIN" : "NONE")),
                      opt.origin_set ? opt.origin : (opt.bios ? BIOS_BASE : (opt.cart ? CART_BASE : 0)));
 
@@ -1588,6 +1636,11 @@ int  main (int  argc, char **argv)
             fflush (stdout);
         }
 
+        if (opt.stats)
+        {
+            report_stats ();
+        }
+
         asm_free (&a);
         pp_free  (pp);
         free     (files);
@@ -1715,7 +1768,7 @@ int  main (int  argc, char **argv)
         pp_each_define (pp, collect_vsym_variable, &ex);
         yfp = fopen (path, "w");
 
-        if (yfp == NULL || asm_write_vsym (&a, yfp, local_name, pp, ex.v, ex.n) != 0)
+        if (yfp == NULL || asm_write_vsym (&a, yfp, local_is, pp, ex.v, ex.n) != 0)
         {
             fprintf (stderr, "v32as: cannot write '%s': %s\n", path, strerror (errno));
             rc = 2;
@@ -1764,7 +1817,7 @@ int  main (int  argc, char **argv)
                 pp_each_define (pp, collect_variable, &ex);
             }
 
-            if (asm_write_symbols (&a, sfp, opt.symbols_all, local_name, pp, ex.v, ex.n) != 0)
+            if (asm_write_symbols (&a, sfp, opt.symbols_all, opt.symbols_all ? local_name : local_is, pp, ex.v, ex.n) != 0)
             {
                 fprintf (stderr, "v32as: cannot write '%s': %s\n", opt.symbols, strerror (errno));
                 rc = 2;
@@ -1805,6 +1858,11 @@ int  main (int  argc, char **argv)
     if (rc == 0 && opt.standard && opt.verbose && opt.binary)
     {
         printf ("assembly successful\n");
+    }
+
+    if (opt.stats)
+    {
+        report_stats ();
     }
 
     asm_free (&a);

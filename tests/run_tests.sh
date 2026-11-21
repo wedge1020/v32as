@@ -380,5 +380,18 @@ fail=$((fail + $(grep -c '^FAIL' "$T/varsout")))
 grep '^FAIL' "$T/langout"
 pass=$((pass + $(grep -c '^ok' "$T/langout")))
 fail=$((fail + $(grep -c '^FAIL' "$T/langout")))
+# file-local labels: their names are kept only for -g and --symbols; the output is the same either way (golden from before that change)
+( cd locals
+  "$BIN" --cart -B -o "$T/l.vbin" many.asm 2>/dev/null && od -An -tx4 -v -w4 "$T/l.vbin" | cmp -s - many.hex && echo ok || echo "FAIL: locals without -g"
+  "$BIN" --cart -B -g -o "$T/lg.vbin" many.asm 2>/dev/null && od -An -tx4 -v -w4 "$T/lg.vbin" | cmp -s - many.hex && echo ok || echo "FAIL: locals -g (vbin)"
+  cmp -s "$T/lg.vbin.sym" many.sym && echo ok || echo "FAIL: locals -g (.sym)"
+  cmp -s "$T/lg.vbin.debug" many.debug && echo ok || echo "FAIL: locals -g (.debug)"
+  "$BIN" --cart -B --symbols "$T/ls.sym" -o "$T/l2.vbin" many.asm 2>/dev/null && cmp -s "$T/ls.sym" many_nolocal.sym && cmp -s "$T/l2.vbin" "$T/l.vbin" && echo ok || echo "FAIL: locals --symbols"
+  "$BIN" --cart -B --symbols "$T/la.sym" --symbols-all -o "$T/l3.vbin" many.asm 2>/dev/null && cmp -s "$T/la.sym" many_all.sym && cmp -s "$T/l3.vbin" "$T/l.vbin" && echo ok || echo "FAIL: locals --symbols-all"
+  "$BIN" --cart -B --stats -o "$T/l4.vbin" many.asm 2>&1 | grep -q 'heap' && cmp -s "$T/l4.vbin" "$T/l.vbin" && echo ok || echo "FAIL: --stats"
+) > "$T/locout" 2>&1
+grep '^FAIL' "$T/locout"
+pass=$((pass + $(grep -c '^ok' "$T/locout")))
+fail=$((fail + $(grep -c '^FAIL' "$T/locout")))
 echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

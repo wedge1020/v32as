@@ -303,6 +303,13 @@ and every
 that the program refers to as
 .IR N,DATASYM+N,V .
 .TP
+.B \-\-stats
+When the run is over, print v32as's own heap use on standard error: the high\-water mark and what is allocated then,
+in bytes and in 4\-byte words, the same after preprocessing, and the number of allocations.
+The figures count the calls v32as makes to the C library's allocator; they are not available
+(and the option says so) where the library cannot report the size of a block.
+On a machine where a character or a pointer is a word they are a guide, not that machine's numbers.
+.TP
 .BR \-MD ", " \-MMD
 Write the files read (the sources,
 .B %include

@@ -338,8 +338,10 @@ struct pp
     unsigned   counter;             // __COUNTER__
     char      *last_global;         // last global label seen, for .local labels
 
-    // file-local labels seen: the label the assembler gets and how a person writes it
-    struct { char *mangled; char *display; }  *locals;
+    // file-local labels seen: the label the assembler gets, how a person writes it (made when first asked for) and the length
+    // of the global label it was written under.  Only noted when something reads them afterwards (keep_locals: -g, --symbols).
+    struct local { char *mangled; char *display; size_t glen; }  *locals;
+    int        keep_locals;
     size_t     nlocals;
     size_t     caplocals;
     int        locals_sorted;
@@ -790,22 +792,21 @@ void  pp_each_define (pp_t *p, void (*cb) (void *ud, const char *name, const cha
 
 static int  local_cmp (const void *x, const void *y)
 {
-    const char  *const  *p = x, *const  *q = y;
+    const struct local  *p = x, *q = y;
 
-    return (strcmp (*p, *q));
+    return (strcmp (p -> mangled, q -> mangled));
 }
 
-// "_draw__again" -> "_draw.again" when that is what a ".again" under "_draw:" became
-const char  *pp_local_name (pp_t *p, const char *mangled)
+// the entry for a mangled name, or NULL
+static struct local  *local_find (pp_t *p, const char *mangled)
 {
     size_t  lo = 0, hi = p -> nlocals;
 
     if (!p -> locals_sorted)
     {
-        // entries are {mangled, display} pairs: sort by the first member
         if (p -> nlocals > 1)
         {
-            qsort (p -> locals, p -> nlocals, 2 * sizeof (char *), local_cmp);
+            qsort (p -> locals, p -> nlocals, sizeof (p -> locals[0]), local_cmp);
         }
         p -> locals_sorted = 1;
     }
@@ -817,7 +818,7 @@ const char  *pp_local_name (pp_t *p, const char *mangled)
 
         if (c == 0)
         {
-            return (p -> locals[mid].display);
+            return (&p -> locals[mid]);
         }
 
         if (c < 0)  { lo = mid + 1; }
@@ -825,6 +826,39 @@ const char  *pp_local_name (pp_t *p, const char *mangled)
     }
 
     return (NULL);
+}
+
+// Whether the preprocessor noted file-local labels at all: only when the output wants them afterwards (-g, --symbols), the
+// names are not kept otherwise (the assembler has the mangled ones as its symbols)
+void  pp_set_keep_locals (pp_t *p, int on)
+{
+    p -> keep_locals = on;
+}
+
+// "_draw__again" -> "_draw.again" when that is what a ".again" under "_draw:" became (the spelling is made on the first ask)
+const char  *pp_local_name (pp_t *p, const char *mangled)
+{
+    struct local  *l = local_find (p, mangled);
+
+    if (l != NULL && l -> display == NULL)
+    {
+        size_t  n = strlen (l -> mangled);
+
+        l -> display = xrealloc (NULL, n);                      // one character shorter than the mangled name ("__" -> ".")
+        memcpy (l -> display, l -> mangled, l -> glen);
+        l -> display[l -> glen] = '.';
+        memcpy (l -> display + l -> glen + 1, l -> mangled + l -> glen + 2, n - l -> glen - 2 + 1);
+    }
+
+    return (l != NULL ? l -> display : NULL);
+}
+
+// the same question without making the spelling: the mangled name itself if it is a file-local label, else NULL
+const char  *pp_is_local (pp_t *p, const char *mangled)
+{
+    struct local  *l = local_find (p, mangled);
+
+    return (l != NULL ? l -> mangled : NULL);
 }
 
 void  pp_add_include_dir (pp_t *p, const char *dir)
@@ -898,6 +932,36 @@ char  *pp_output_take (pp_t *p, size_t *len)
     p -> out.s   = NULL;
     p -> out.len = p -> out.cap = 0;
     return (s);
+}
+
+// Room for the line map of about this many lines, so that it is allocated once and not doubled
+void  pp_reserve_lines (pp_t *p, size_t lines)
+{
+    if (lines > p -> capmap)
+    {
+        p -> capmap = lines;
+        p -> map    = xrealloc (p -> map, p -> capmap * sizeof (srcloc_t));
+    }
+}
+
+// The line map cut to the lines it has (after the preprocessing of a whole file: the estimate or the doubling left slack)
+void  pp_trim_linemap (pp_t *p)
+{
+    if (p -> nmap < p -> capmap && p -> map != NULL)
+    {
+        p -> capmap = p -> nmap > 0 ? p -> nmap : 1;
+        p -> map    = xrealloc (p -> map, p -> capmap * sizeof (srcloc_t));
+    }
+}
+
+// pp_output_clear, and the line map is given back as well: for when the assembler is done with it (not for the REPL, which
+// preprocesses a line at a time and keeps its map for the next one)
+void  pp_output_release (pp_t *p)
+{
+    pp_output_clear (p);
+    free (p -> map);
+    p -> map    = NULL;
+    p -> capmap = 0;
 }
 
 void  pp_output_clear (pp_t *p)
@@ -2098,9 +2162,13 @@ static void  local_note (pp_t *p, const char *name, size_t n)
 {
     size_t  g = strlen (p -> last_global);
     char   *mangled;
-    char   *display;
     size_t  slot;
     int     found;
+
+    if (!p -> keep_locals)
+    {
+        return;
+    }
 
     // the same label is written many times (its definition, every jump to it): keep one copy of each (v32cc's assembly has
     // ~2.4 references per local label; on v32nix every copy was ~70 words of a process that has ~300 K)
@@ -2133,12 +2201,6 @@ static void  local_note (pp_t *p, const char *name, size_t n)
         return;
     }
 
-    display = xrealloc (NULL, g + 1 + n + 1);
-    memcpy (display, p -> last_global, g);
-    display[g] = '.';
-    memcpy (display + g + 1, name, n);
-    display[g + 1 + n] = 0;
-
     if (p -> nlocals == p -> caplocals)
     {
         p -> caplocals = p -> caplocals ? p -> caplocals * 2 : 64;
@@ -2146,7 +2208,8 @@ static void  local_note (pp_t *p, const char *name, size_t n)
     }
 
     p -> locals[p -> nlocals].mangled = mangled;
-    p -> locals[p -> nlocals].display = display;
+    p -> locals[p -> nlocals].display = NULL;
+    p -> locals[p -> nlocals].glen    = g;
     p -> nlocals++;
     p -> lhash[slot] = p -> nlocals;
 }

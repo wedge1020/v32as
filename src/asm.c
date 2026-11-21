@@ -2345,11 +2345,32 @@ static int  parse_common (asm_t *a, const char *name, const char *text, size_t l
     return (parse_common_buf (a, name, buf, n, buf, first_line, map, nmap));
 }
 
+// A first estimate of what a program of this many characters of text comes to, so that the output words and the forward
+// references are allocated once and not doubled (v32cc's assembly: ~13 characters a word, ~130 a forward reference); too
+// small an estimate falls back to doubling, and asm_finish cuts the arrays to what was used
+static void  asm_reserve (asm_t *a, size_t chars)
+{
+    size_t  w = a -> nwords + chars / 10 + 16, f = a -> nfix + chars / 100 + 16;
+
+    if (w > a -> cap)
+    {
+        a -> words = xrealloc (a -> words, w * sizeof (uint32_t));
+        a -> cap   = w;
+    }
+
+    if (f > a -> fixcap)
+    {
+        a -> fix    = xrealloc (a -> fix, f * sizeof (fixup_t));
+        a -> fixcap = f;
+    }
+}
+
 // text the caller gave away (room for len + 4): scanned in place, no copy (on v32nix a copy of a linked program's text does not fit)
 int  asm_parse_map_owned (asm_t *a, const char *name, char *text, size_t len, const srcloc_t *map, size_t nmap)
 {
     char  *buf = text;
 
+    asm_reserve (a, len);
     if (len >= 3 && (unsigned char) buf[0] == 0xEF && (unsigned char) buf[1] == 0xBB && (unsigned char) buf[2] == 0xBF)
     {
         memmove (buf, buf + 3, len - 3);
@@ -2450,6 +2471,29 @@ int  asm_finish (asm_t *a)
     }
 
     a -> nfix = 0;
+
+    // every forward reference is settled: the array goes, and the others are cut to their size
+    free (a -> fix);
+    a -> fix    = NULL;
+    a -> fixcap = 0;
+
+    if (a -> words != NULL && a -> cap > a -> nwords)
+    {
+        a -> cap   = a -> nwords > 0 ? a -> nwords : 1;
+        a -> words = xrealloc (a -> words, a -> cap * sizeof (uint32_t));
+    }
+
+    if (a -> rel != NULL && a -> relcap > a -> nrel)
+    {
+        a -> relcap = a -> nrel > 0 ? a -> nrel : 1;
+        a -> rel    = xrealloc (a -> rel, a -> relcap * sizeof (rel_t));
+    }
+
+    if (a -> rec != NULL && a -> reccap > a -> nrec)
+    {
+        a -> reccap = a -> nrec > 0 ? a -> nrec : 1;
+        a -> rec    = xrealloc (a -> rec, a -> reccap * sizeof (dbgrec_t));
+    }
 
     for (sym_t *s = a -> first; s != NULL; s = s -> order)
     {

@@ -55,6 +55,9 @@ int          pp_pending      (const pp_t *p);       // inside %macro / %rep / %i
 const char     *pp_output   (const pp_t *p, size_t *len);
 const srcloc_t *pp_linemap  (const pp_t *p, size_t *nlines);
 void            pp_reserve_output (pp_t *p, size_t chars);   // size the output buffer once, from an estimate of the output length
+void            pp_reserve_lines (pp_t *p, size_t lines);   // size the line map once, from an estimate of the line count
+void            pp_trim_linemap (pp_t *p);                  // cut the line map to its lines (after a whole file)
+void            pp_output_release (pp_t *p);                // pp_output_clear, and the line map is freed too (not for the REPL)
 void            pp_output_clear (pp_t *p);
 char           *pp_output_take  (pp_t *p, size_t *len);   // the output buffer, now the caller's (malloc'd, room for len + 4)
 unsigned        pp_errors   (const pp_t *p);
@@ -92,5 +95,12 @@ const char  *pp_rom_resource  (const pp_t *p, int sound, size_t i, const char **
 // For a label the assembler sees (e.g. "_draw__again") that came from a file-local ".again"
 // under "_draw:", its spelling "_draw.again"; NULL for any other label
 const char  *pp_local_name (pp_t *p, const char *mangled);
+
+// The preprocessor notes its file-local labels (for pp_local_name, pp_is_local) only when told to (default: not): they are
+// only needed by what is written after the assembly (-g, --symbols), and then only as names
+void         pp_set_keep_locals (pp_t *p, int on);
+
+// the label's name if it is a file-local label (a .name under a global label), else NULL; makes no new string
+const char  *pp_is_local   (pp_t *p, const char *mangled);
 
 #endif

@@ -12,6 +12,7 @@
 #include <stdio.h>
 
 #include "pp.h"
+#include "heapstat.h"
 
 #define  VERSION            "20261109-dev"
 

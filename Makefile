@@ -31,7 +31,7 @@ SRC      = src
 INC      = inc
 BUILD    = build
 override CFLAGS += -I$(INC) -I$(BUILD)
-OBJ      = $(addprefix $(BUILD)/,parser.tab.o lexer.o asm.o tables.o pp.o ppexpr.o buildscript.o main.o)
+OBJ      = $(addprefix $(BUILD)/,parser.tab.o lexer.o asm.o tables.o heapstat.o pp.o ppexpr.o buildscript.o main.o)
 
 READLINE ?= auto
 ifeq ($(READLINE),auto)

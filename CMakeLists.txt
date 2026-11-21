@@ -205,6 +205,7 @@ set(V32AS_PARSER_SRC ${BISON_v32as_parser_OUTPUTS} ${FLEX_v32as_lexer_OUTPUTS})
 set(V32AS_CORE_SRC
     src/asm.c
     src/tables.c
+    src/heapstat.c
     src/pp.c
     src/buildscript.c
     src/ppexpr.c
