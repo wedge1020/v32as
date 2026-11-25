@@ -1,0 +1,4 @@
+bench.asm,6,bench.lua,1,main
+bench.asm,9,MAPPED.c,77,mainc
+bench.asm,12,bench.lua,3,main
+bench.asm,19,other.lua,10,f__l0

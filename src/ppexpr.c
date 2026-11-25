@@ -23,13 +23,16 @@ typedef struct
     char        *err;
     size_t       errsize;
     int          failed;
+    int          depth;             // nesting of ( ) unary operators and ?:, bounded: the parser recurses
 }
 ev_t;
+
+#define  EV_MAX_DEPTH  200
 
 static ppval_t  ev_ternary (ev_t *e, int live);
 
 static void  ev_fail (ev_t *e, const char *fmt, ...)
-    __attribute__ ((format (printf, 2, 3)));
+    __attribute__ ((format (V32_PRINTF, 2, 3)));
 
 #include <stdarg.h>
 
@@ -672,7 +675,16 @@ static ppval_t  ev_unary (ev_t *e, int live)
             ppval_t  v;
 
             e -> pos++;
+
+            if (++e -> depth > EV_MAX_DEPTH)
+            {
+                ev_fail (e, "expression is nested too deeply");
+                e -> depth--;
+                return (mk_int (0));
+            }
+
             v = ev_unary (e, live);
+            e -> depth--;
 
             if (c == '-')
             {
@@ -868,7 +880,7 @@ static ppval_t  ev_lor (ev_t *e, int live)
     return (v);
 }
 
-static ppval_t  ev_ternary (ev_t *e, int live)
+static ppval_t  ev_ternary_1 (ev_t *e, int live)
 {
     ppval_t  c = ev_lor (e, live);
 
@@ -892,13 +904,30 @@ static ppval_t  ev_ternary (ev_t *e, int live)
     return (c);
 }
 
+static ppval_t  ev_ternary (ev_t *e, int live)
+{
+    ppval_t  v;
+
+    if (++e -> depth > EV_MAX_DEPTH)
+    {
+        ev_fail (e, "expression is nested too deeply");
+        e -> depth--;
+        return (mk_int (0));
+    }
+
+    v = ev_ternary_1 (e, live);
+    e -> depth--;
+
+    return (v);
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////
 //
 // Public interface
 //
 int  ppexpr_eval (const char *s, size_t n, ppval_t *out, char *err, size_t errsize)
 {
-    ev_t  e = { s, n, 0, err, errsize, 0 };
+    ev_t  e = { s, n, 0, err, errsize, 0, 0 };
 
     err[0] = 0;
     *out   = ev_ternary (&e, 1);

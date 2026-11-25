@@ -3,9 +3,10 @@
 // assembler. Handles option parsing, file and STDIN input, and the interactive mode.
 //
 // run for help:          ./v32as --help
-// assemble to a listing: ./v32as --cart program.asm
-// assemble to a VBIN:    ./v32as --cart --binary -o program.vbin program.asm
-// interactive mode:      ./v32as            (when STDIN is a terminal)
+// assemble to a VBIN:    ./v32as program.asm              (writes program.vbin, cartridge base)
+// assemble to a listing: ./v32as --text --cart program.asm
+// interactive mode:      ./v32as -i
+// (with no input files and a terminal on STDIN, the usage summary is printed)
 //
 // The bash v32as options (bios, cart, none, binary, step, verbose, help) are still
 // accepted as bare words, as long as no file with that name exists.
@@ -22,6 +23,7 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <limits.h>
+#include <sys/stat.h>
 #if defined(_WIN32)
 #include <windows.h>
 #elif defined(__APPLE__)
@@ -34,6 +36,7 @@
 #endif
 
 #include "v32as.h"
+#include "portable.h"
 #include "buildscript.h"
 
 typedef struct
@@ -49,6 +52,7 @@ typedef struct
     int          verbose;
     int          help;
     int          version;
+    int          interactive;       // -i: the interactive mode (REPL)
     int          text;              // -T: print a listing instead of writing a VBIN
     int          none;              // -n: no base address (implies --text)
     int          binary_explicit;   // -B was given
@@ -94,83 +98,85 @@ macro_opt_t;
 //
 static void  usage (FILE *fp)
 {
-    fprintf (fp,
-        "usage: v32as [OPTION...] [ASMFILE...]\n"
-        "Assemble Vircon32 assembly into a VBIN file (FILE.vbin by default), like the\n"
-        "official 'assemble' tool.\n"
-        "\n"
-        "  -o, --output=FILE    output file (default: the input file with a .vbin extension;\n"
-        "                       STDOUT when reading STDIN)\n"
-        "  -b, --bios           assemble for BIOS (addresses start at 0x10000000)\n"
-        "  -c, --cart           assemble for CART (0x20000000; this is the default)\n"
-        "  -O, --origin ADDR    assemble for an arbitrary base address (e.g. code that will run from RAM)\n"
-        "      --v32x           write a v32nix executable (V32X: an 8-word header, then the program) instead of a\n"
-        "                       VBIN; needs --origin.  The data words that follow the program come from\n"
-        "      --v32x-data=N    or, without it, from the source's %%define __V32X_DATAWORDS (v32cc --data-after-text)\n"
-        "  -g, --debug[=MODE]   also write FILE.debug (CSV: address,file,line[,label]) next to the\n"
-        "                       output file; MODE is program (default), vbin or v32, as in the\n"
-        "                       official assembler's \"-g MODE\"; when the source has ';@src FILE:LINE'\n"
-        "                       lines (v32lua -g, v32cc -g) the entries come from them: one per marker,\n"
-        "                       at its first instruction, with the function (__function_NAME) as 4th\n"
-        "                       column; --map wins for the instructions it names. ';@var'/';@scope' lines\n"
-        "                       also write FILE.vars (the locals as address ranges)\n"
-        "  -C, --object         write a relocatable object (FILE.v32ob) for the linker v32asld; labels\n"
-        "                       are relative to the object, 'global'/'extern' name the symbols shared\n"
-        "                       with other objects, debug info is stored in the object\n"
-        "  -r, --relocs=FILE    write the list of words that hold an address (label references,\n"
-        "                       code and data) as 'index,value' lines; for relocatable modules\n"
-        "      --map=FILE       FILE is v32cc's debug file (asmfile,asmline,cfile,cline[,func]): with -g\n"
-        "                       the .debug file names the C file and line of each instruction, with -C\n"
-        "                       the object does, and errors and warnings say which C line they come from\n"
-        "      --symbols=FILE   write the label table: one 'address,name,kind' line per label (kind F:\n"
-        "                       code, D: data); file-local labels only with --symbols-all, which\n"
-        "                       also lists the compiler's global_* variables and\n"
-        "                       DATASYM+N references (kind V, address column = N)\n"
-        "      --symbols-all    with --symbols: add 'function.local' labels, global_* and DATASYM+N variables\n"
-        "      --stats          at the end, print v32as's own heap use on stderr: the high-water mark and what\n"
-        "                       is alive then, in bytes and 4-byte words (and after preprocessing); on\n"
-        "                       v32nix, in words, from the C library's allocator (peak break, used, free)\n"
-        "  -MD, -MMD            write the files read (%%include, datafile) as a Makefile rule to\n"
-        "                       OUTPUT with a .d extension; -MF FILE names it, -MT TARGET the target,\n"
-        "                       -MP adds an empty rule for each dependency\n"
-        "      --rom-xml=FILE   also write the ROM definition packrom reads (FILE.xml): the %%title, %%version,\n"
-        "                       %%texture and %%sound of the source, naming the VBIN; the images and sounds are\n"
-        "                       named as the .vtex and .vsnd files png2vircon and wav2vircon make from them\n"
-        "      --rom-xml-opt=FILE  the definition for the optimized (v32opt) build, NAMEOpt.vbin\n"
-        "      --build-scripts[=FORMATS]\n"
-        "                       write Make.sh and Make.bat (FORMATS: sh, bat) that rebuild the cartridge: v32opt (when\n"
-        "                       installed), v32as, png2vircon, wav2vircon, packrom; next to the first source. A script\n"
-        "                       not written by v32as is never replaced; --rom-xml defaults to NAME.xml\n"
-        "      --no-build-scripts  never write them (what the scripts themselves pass; V32AS_BUILD_SCRIPT=1 does the same)\n"
-        "      --build-script-dir=DIR  write them in DIR instead\n"
-        "  -T, --text           print a human-readable listing (instruction encodings) instead\n"
-        "                       of writing a VBIN; addresses start at 0 unless -b/-c/-O is given\n"
-        "  -n, --none           same as --text with no base address\n"
-        "  -B, --binary         write a VBIN (already the default; not with -T, -n or -E)\n"
-        "  -w, --no-warnings    inhibit all warnings\n"
-        "  -D, --define=NAME[=VALUE]\n"
-        "                       predefine a preprocessor symbol (VALUE defaults to 1); a %%define of\n"
-        "                       the same name in the source warns and wins, unless the option is\n"
-        "                       written -D!NAME=VALUE (or --force-define), when the command line wins\n"
-        "  -Wno-redefine        do not warn when a %%define changes a macro's value (-Wredefine: do)\n"
-        "  -Wmarkers            warn about a malformed ;@src, ;@var or ;@scope line (off by default)\n"
-        "  -U, --undef=NAME     remove a predefined symbol (processed in command line order)\n"
-        "  -I, --include=DIR    add DIR to the %%include and datafile search path (may be repeated)\n"
-        "  -E, --preprocess     only run the preprocessor and print the result\n"
-        "  -P                   with -E: omit the '# LINE \"FILE\"' markers\n"
-        "      --standard       strict compatibility with the official 'assemble': no language\n"
-        "                       extensions, no extended preprocessor, official -v messages\n"
-        "  -s, --step           pause after each statement (files only)\n"
-        "  -v, --verbose        trace the assembly of every instruction to STDERR\n"
-        "  -h, --help           display this usage information and exit\n"
-        "  -V, --version        display the version and exit\n"
-        "\n"
-        "With no ASMFILE (or with '-'), input comes from STDIN. When STDIN is a terminal\n"
-        "this starts the interactive mode: each line is assembled as soon as it is\n"
-        "entered; type .help for the commands available there.\n"
-        "\n"
-        "The bash-style words bios, cart, none, binary, step, verbose and help are also\n"
-        "accepted in place of the options above.\n");
+    // the text is laid out for an 80-column terminal (no line over 79 characters)
+    fputs ("usage: v32as [OPTION...] [ASMFILE...]\n"
+           "       v32as -i [OPTION...]\n"
+           "Assemble Vircon32 assembly into a VBIN file (ASMFILE.vbin by default), like\n"
+           "the official 'assemble' tool.\n"
+           "\n", fp);
+    fputs ("Output and target:\n"
+           "  -o, --output=FILE    output file (default: the input file with a .vbin\n"
+           "                       extension; STDOUT when reading STDIN)\n"
+           "  -b, --bios           assemble for the BIOS (addresses start at 0x10000000)\n"
+           "  -c, --cart           assemble for a cartridge (0x20000000; the default)\n"
+           "  -O, --origin=ADDR    assemble for any base address (e.g. code run from RAM)\n"
+           "  -T, --text           print a listing (the instruction encodings) instead of\n"
+           "                       writing a VBIN; addresses only with -b, -c or -O\n"
+           "  -n, --none           the same as --text with no base address\n"
+           "  -B, --binary         write a VBIN (already the default; not with -T/-n/-E)\n"
+           "  -C, --object         write a relocatable object (ASMFILE.v32ob) for v32asld;\n"
+           "                       'global'/'extern' name the symbols objects share\n"
+           "      --v32x           write a v32nix executable (V32X: an 8-word header, then\n"
+           "                       the program) instead of a VBIN; needs --origin\n"
+           "      --v32x-data=N    the data words after the program (default: the\n"
+           "                       source's %define __V32X_DATAWORDS, from v32cc\n"
+           "                       --data-after-text)\n"
+           "\n", fp);
+    fputs ("Debug and tool output:\n"
+           "  -g, --debug[=MODE]   also write OUTPUT.debug (address,file,line[,label]);\n"
+           "                       MODE is program (default), vbin or v32, as in the\n"
+           "                       official \"-g MODE\". ';@src FILE:LINE' lines (v32lua -g,\n"
+           "                       v32cc -g) give the entries, with the function as a 4th\n"
+           "                       column; ';@var'/';@scope' lines also write OUTPUT.vars\n"
+           "      --map=FILE       v32cc's debug file: -g, -C and the diagnostics then name\n"
+           "                       the C file and line of each instruction\n"
+           "  -r, --relocs=FILE    write 'index,value' for every word that holds an address\n"
+           "      --symbols=FILE   write the label table: 'address,name,kind' per label\n"
+           "                       (kind F: code, D: data)\n"
+           "      --symbols-all    with --symbols: also file-local and compiler labels,\n"
+           "                       and DATASYM+N variables (kind V)\n"
+           "  -MD, -MMD            write the sources and the files they read as a Makefile\n"
+           "                       rule to OUTPUT.d; -MF FILE names it, -MT TARGET the\n"
+           "                       target, -MP adds an empty rule for each dependency\n"
+           "      --stats          print v32as's own heap use on STDERR at the end\n"
+           "\n", fp);
+    fputs ("Cartridge files:\n"
+           "      --rom-xml=FILE   also write packrom's ROM definition from the source's\n"
+           "                       %title, %version, %texture and %sound\n"
+           "      --rom-xml-opt=FILE  the same for the optimized (v32opt) build\n"
+           "      --build-scripts[=sh,bat]\n"
+           "                       write Make.sh and Make.bat, which rebuild the cartridge\n"
+           "                       (a script v32as did not write is never replaced)\n"
+           "      --build-script-dir=DIR  write them in DIR, not next to the first source\n"
+           "      --no-build-scripts  never write them (V32AS_BUILD_SCRIPT=1: the same)\n"
+           "\n", fp);
+    fputs ("Preprocessor:\n"
+           "  -D, --define=NAME[=VALUE]\n"
+           "                       predefine NAME (VALUE defaults to 1); a %define in the\n"
+           "                       source warns and wins, unless written -D!NAME=VALUE (or\n"
+           "                       --force-define), when the command line wins\n"
+           "  -U, --undef=NAME     remove a predefined symbol (in command line order)\n"
+           "  -I, --include=DIR    add DIR to the %include and datafile search path\n"
+           "  -E, --preprocess     only run the preprocessor and print the result\n"
+           "  -P                   with -E: omit the '# LINE \"FILE\"' markers\n"
+           "      --standard       the official 'assemble' exactly: no language extensions,\n"
+           "                       no extended preprocessor, the official -v messages\n"
+           "\n", fp);
+    fputs ("Messages and modes:\n"
+           "  -w, --no-warnings    inhibit all warnings\n"
+           "  -Wno-redefine        no warning when a %define changes a macro's value\n"
+           "  -Wmarkers            warn about malformed ;@src, ;@var and ;@scope lines\n"
+           "  -v, --verbose        trace the assembly of every instruction on STDERR\n"
+           "  -s, --step           pause after each statement (input files only)\n"
+           "  -i, --interactive    the interactive mode: each line is assembled as soon as\n"
+           "                       it is entered (.help there lists its commands)\n"
+           "  -h, --help           display this usage information and exit\n"
+           "  -V, --version        display the version and exit\n"
+           "\n", fp);
+    fputs ("With '-', or with no ASMFILE and STDIN redirected or piped, the source is\n"
+           "read from STDIN and the VBIN written to STDOUT. With no ASMFILE at a\n"
+           "terminal, v32as prints this summary. The bash-style words bios, cart, none,\n"
+           "binary, step, verbose and help are accepted in place of their options.\n", fp);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -231,13 +237,25 @@ static int  write_v32x (asm_t *a, FILE *fp, uint32_t origin, long data)
     return (0);
 }
 
-////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////// the last path separator ('/', and '\\' too on Windows), or NULL
+static const char  *last_sep (const char *path)
+{
+    const char  *slash = strrchr (path, '/');
+#ifdef _WIN32
+    const char  *bslash = strrchr (path, '\\');
+
+    if (bslash != NULL && (slash == NULL || bslash > slash))  { slash = bslash; }
+#endif
+    return (slash);
+}
+
+////////
 //
 // FILE.ext -> FILE.vbin, as the official assembler names its output
 //
 static char  *vbin_name (const char *input, const char *ext)
 {
-    const char  *slash = strrchr (input, '/');
+    const char  *slash = last_sep (input);
     const char  *base  = slash ? slash + 1 : input;
     const char  *dot   = strrchr (base, '.');
     size_t       stem  = (dot != NULL && dot != base) ? (size_t) (dot - input) : strlen (input);
@@ -250,6 +268,33 @@ static char  *vbin_name (const char *input, const char *ext)
     }
 
     return (name);
+}
+
+// the same existing file (st_ino is 0 on Windows: no answer there)
+static int  same_file (const char *a, const char *b)
+{
+    struct stat  x, y;
+
+    return (stat (a, &x) == 0 && stat (b, &y) == 0 && x.st_ino != 0 && x.st_ino == y.st_ino && x.st_dev == y.st_dev);
+}
+
+// remove a half-written output, but never a device such as /dev/null or a pipe
+static void  discard_output (const char *path)
+{
+    struct stat  st;
+
+    if (stat (path, &st) == 0 && S_ISREG (st.st_mode))
+    {
+        remove (path);
+    }
+}
+
+// fopen succeeds on a directory on POSIX systems and the failure only comes later, as a bogus size
+static int  is_directory (FILE *fp)
+{
+    struct stat  st;
+
+    return (fstat (fileno (fp), &st) == 0 && S_ISDIR (st.st_mode));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -324,24 +369,36 @@ static char  *read_line (const char *prompt)
     return (readline (prompt));
 #else
     char    *line = NULL;
-    size_t   cap  = 0;
-    ssize_t  got;
+    size_t   n = 0, cap = 0;
+    int      ch;
 
     fputs  (prompt, stdout);
     fflush (stdout);
 
-    got = getline (&line, &cap, stdin);
+    // (getline is not in MinGW's libc)
+    while ((ch = fgetc (stdin)) != EOF && ch != '\n')
+    {
+        if (n + 2 > cap)
+        {
+            char  *bigger = realloc (line, cap = cap ? cap * 2 : 256);
 
-    if (got < 0)
+            if (bigger == NULL)  { free (line);  return (NULL); }
+            line = bigger;
+        }
+
+        line[n++] = (char) ch;
+    }
+
+    if (ch == EOF && n == 0)
     {
         free (line);
         return (NULL);
     }
 
-    if (got > 0 && line[got - 1] == '\n')
-    {
-        line[got - 1] = 0;
-    }
+    if (line == NULL && (line = malloc (1)) == NULL)  { return (NULL); }
+
+    if (n > 0 && line[n - 1] == '\r')  { n--; }
+    line[n] = 0;
 
     return (line);
 #endif
@@ -981,7 +1038,7 @@ static int  rom_outputs (const options_t *opt, const char *argv0, const char **f
     }
 
     // the tool as it was called, without its directory: the scripts find it through the PATH (or V32AS)
-    slash = strrchr (tool, '/');
+    slash = last_sep (tool);
 
     if (slash != NULL)
     {
@@ -994,7 +1051,7 @@ static int  rom_outputs (const options_t *opt, const char *argv0, const char **f
     }
 
     // the title when the source has no %title: the program's name
-    slash = strrchr (opt -> output, '/');
+    slash = last_sep (opt -> output);
     title = strdup (slash ? slash + 1 : opt -> output);
 
     if (strrchr (title, '.') > title)
@@ -1089,14 +1146,14 @@ static char  *exe_directory (const char *argv0)
     {
         uint32_t  size  = sizeof (buf);
 
-        if ((_NSGetExecutablePath (buf, &size) == 0) && (realpath (buf, real) != NULL))
+        if ((_NSGetExecutablePath (buf, &size) == 0) && (v32_realpath (buf, real) != NULL))
         {
             snprintf (buf, sizeof (buf), "%s", real);
             goto have;
         }
     }
 #endif
-    if ((argv0 != NULL) && (strchr (argv0, '/') != NULL) && (realpath (argv0, real) != NULL))
+    if ((argv0 != NULL) && (strchr (argv0, '/') != NULL) && (v32_realpath (argv0, real) != NULL))
     {
         snprintf (buf, sizeof (buf), "%s", real);
         goto have;
@@ -1110,7 +1167,7 @@ static char  *exe_directory (const char *argv0)
         for (entry = strtok_r (path, ":", &save); entry != NULL; entry = strtok_r (NULL, ":", &save))
         {
             snprintf (buf, sizeof (buf), "%s/%s", entry, argv0);
-            if ((access (buf, X_OK) == 0) && (realpath (buf, real) != NULL))
+            if ((access (buf, X_OK) == 0) && (v32_realpath (buf, real) != NULL))
             {
                 free (path);
                 snprintf (buf, sizeof (buf), "%s", real);
@@ -1138,7 +1195,7 @@ static void  add_default_include_dirs (pp_t *pp, const char *argv0)
     size_t k    = 0;
 
 #ifdef V32AS_LIBDIR
-    if (access (V32AS_LIBDIR, R_OK) == 0)  pp_add_include_dir (pp, V32AS_LIBDIR);
+    if (V32AS_LIBDIR[0] != 0 && access (V32AS_LIBDIR, R_OK) == 0)  pp_add_include_dir (pp, V32AS_LIBDIR);   // (empty: a relocatable build, e.g. a release zip)
 #endif
     if (dir == NULL)  return;
     for (k = 0; k < sizeof (rel) / sizeof (rel[0]); k++)
@@ -1183,6 +1240,7 @@ int  main (int  argc, char **argv)
         { "preprocess", no_argument,     0, 'E' },
         { "step",     no_argument,       0, 's' },
         { "verbose",  no_argument,       0, 'v' },
+        { "interactive", no_argument,    0, 'i' },
         { "help",     no_argument,       0, 'h' },
         { "version",  no_argument,       0, 'V' },
         { 0,          0,                 0,  0  }
@@ -1204,7 +1262,10 @@ int  main (int  argc, char **argv)
     int          pp_failed = 0;
     int          can_stream;
     FILE        *out   = stdout;
+    int          out_opened_here = 0;       // a text output file (-E, -T, -n) that this run created
     int          rc    = 0;
+
+    v32_binary_mode ();
 
     if (files == NULL || mopts == NULL || incdirs == NULL)
     {
@@ -1244,7 +1305,7 @@ int  main (int  argc, char **argv)
         argv[argc] = NULL;
     }
 
-    while ((c = getopt_long (argc, argv, "bcnCTBgwO:o:r:D:U:I:W:EPsvhV", long_options, NULL)) != -1)
+    while ((c = getopt_long (argc, argv, "bcnCTBgwO:o:r:D:U:I:W:EPsvihV", long_options, NULL)) != -1)
     {
         switch (c)
         {
@@ -1261,7 +1322,21 @@ int  main (int  argc, char **argv)
             case 1004: opt.symbols_all = 1;   break;
             case 1006: opt.v32x = 1;          break;
             case 1008: opt.stats = 1; heapstat_begin ();   break;
-            case 1007: opt.v32x_data = strtol (optarg, NULL, 0);  opt.v32x_data_set = 1;  break;
+            case 1007:
+            {
+                char           *end;
+                unsigned long   v = strtoul (optarg, &end, 0);
+
+                if (*optarg == '\0' || *optarg == '-' || *end != '\0' || v > 0x7FFFFFFFul)
+                {
+                    fprintf (stderr, "v32as: invalid --v32x-data '%s' (a number of words)\n", optarg);
+                    return (2);
+                }
+
+                opt.v32x_data = (long) v;
+                opt.v32x_data_set = 1;
+                break;
+            }
             case 1010: opt.rom_xml = optarg;      break;
             case 1011: opt.rom_xml_opt = optarg;  break;
             case 1012: opt.build_scripts = 1;  opt.script_formats = optarg;  break;
@@ -1334,6 +1409,7 @@ int  main (int  argc, char **argv)
             case 'P':  opt.no_markers = 1;    break;
             case 's':  opt.step    = 1;       break;
             case 'v':  opt.verbose = 1;       break;
+            case 'i':  opt.interactive = 1;   break;
             case 'h':  opt.help    = 1;       break;
             case 'V':  opt.version = 1;       break;
             default:
@@ -1382,7 +1458,40 @@ int  main (int  argc, char **argv)
         return (1);
     }
 
-    will_repl  = (nfiles == 0 && isatty (STDIN_FILENO) && !opt.binary_explicit && !opt.preprocess);
+    // the interactive mode is asked for (-i); without it, no input files and a terminal on STDIN
+    // is not enough to go on: say how v32as is used
+    will_repl  = opt.interactive;
+
+    if (will_repl)
+    {
+        const char  *bad = NULL;
+
+        if (nfiles > 0)                     bad = "input files";
+        else if (opt.output)                bad = "-o";
+        else if (opt.preprocess)            bad = "-E";
+        else if (opt.binary_explicit)       bad = "-B";
+        else if (opt.object)                bad = "-C";
+        else if (opt.debug)                 bad = "-g";
+        else if (opt.relocs)                bad = "-r";
+        else if (opt.symbols)               bad = "--symbols";
+        else if (opt.map)                   bad = "--map";
+        else if (opt.dep)                   bad = "-MD";
+        else if (opt.step)                  bad = "-s";
+        else if (opt.v32x)                  bad = "--v32x";
+        else if (opt.rom_xml || opt.rom_xml_opt)  bad = "--rom-xml";
+        else if (opt.build_scripts > 0)     bad = "--build-scripts";
+
+        if (bad != NULL)
+        {
+            fprintf (stderr, "v32as: --interactive cannot be combined with %s\n", bad);
+            return (2);
+        }
+    }
+    else if (nfiles == 0 && isatty (STDIN_FILENO))
+    {
+        usage (stderr);
+        return (2);
+    }
 
     if (opt.object)
     {
@@ -1443,6 +1552,20 @@ int  main (int  argc, char **argv)
         if (opt.standard && opt.verbose && derived != NULL)
         {
             printf ("using output path: \"%s\"\n", derived);
+        }
+    }
+
+    if (opt.output != NULL)
+    {
+        int  k;
+
+        for (k = 0; k < nfiles; k++)
+        {
+            if (strcmp (files[k], "-") != 0 && same_file (files[k], opt.output))
+            {
+                fprintf (stderr, "v32as: the output file '%s' is also an input file\n", opt.output);
+                return (2);
+            }
         }
     }
 
@@ -1625,6 +1748,8 @@ int  main (int  argc, char **argv)
             fprintf (stderr, "v32as: cannot write '%s': %s\n", opt.output, strerror (errno));
             return (2);
         }
+
+        out_opened_here = 1;
     }
 
     a.out = out;
@@ -1686,6 +1811,13 @@ int  main (int  argc, char **argv)
             size_t  len  = 0;
             char   *text;
 
+            if (fp != NULL && fp != stdin && is_directory (fp))
+            {
+                fclose (fp);
+                fp    = NULL;
+                errno = EISDIR;
+            }
+
             if (fp == NULL)
             {
                 fprintf (stderr, "v32as: unable to read '%s': %s\n", files[i], strerror (errno));
@@ -1736,6 +1868,11 @@ int  main (int  argc, char **argv)
         if (out != stdout)
         {
             fclose (out);
+
+            if (rc != 0 && out_opened_here)
+            {
+                discard_output (opt.output);
+            }
         }
         else
         {
@@ -1940,13 +2077,19 @@ int  main (int  argc, char **argv)
         rc = write_deps (&opt, files, nfiles, pp, &a);
     }
 
-    if (out != stdout)
+    if (out != NULL && out != stdout)
     {
         fclose (out);
     }
-    else
+    else if (out == stdout)
     {
         fflush (stdout);
+    }
+
+    // a listing or preprocessed source that stopped at an error is not left behind as if it were the result
+    if (rc != 0 && !opt.binary && opt.output != NULL && out_opened_here)
+    {
+        discard_output (opt.output);
     }
 
     if (rc == 0 && opt.object && !opt.no_warn

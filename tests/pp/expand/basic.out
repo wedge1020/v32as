@@ -1,0 +1,4 @@
+# 6 "expand/basic.asm"
+  mov R0, 10       ; comment NUM
+  mov R1, SELF + 1
+  mov R2, A

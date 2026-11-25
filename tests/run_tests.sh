@@ -393,5 +393,43 @@ fail=$((fail + $(grep -c '^FAIL' "$T/langout")))
 grep '^FAIL' "$T/locout"
 pass=$((pass + $(grep -c '^ok' "$T/locout")))
 fail=$((fail + $(grep -c '^FAIL' "$T/locout")))
+# the interactive mode is -i (here fed from a pipe); it takes no files and no output options
+(
+  out=$(printf '_a: mov R0, 5\njmp _a\n.dump\n.quit\n' | "$BIN" -i -c 2>&1)
+  echo "$out" | grep -q '^0x20000003  0x20000000$' && echo ok || echo "FAIL: -i assembles and .dump lists the words"
+  out=$(printf 'mov R0, 1\n' | "$BIN" --interactive 2>&1)
+  echo "$out" | grep -q 'interactive mode' && echo ok || echo "FAIL: --interactive starts the interactive mode"
+  for o in "x.asm" "-o x.vbin" "-E" "-B" "-C" "-g" "-s"; do
+    "$BIN" -i $o </dev/null >/dev/null 2>&1; [ $? -eq 2 ] && echo ok || echo "FAIL: -i $o is a usage error"
+  done
+  # an output file that cannot be written is status 2 (it used to crash in fclose (NULL))
+  printf 'mov R0, 1\n' > "$T/w.asm"
+  "$BIN" -o "$T/no/such/dir/w.vbin" "$T/w.asm" >/dev/null 2>&1; [ $? -eq 2 ] && echo ok || echo "FAIL: unwritable output is status 2"
+  # release audit: a macro that %unmacros itself while running (was a use-after-free)
+  printf '%%macro M 0\nx\n%%unmacro M\ny\n%%endmacro\nM\nM\n' > "$T/u.asm"
+  [ "$("$BIN" -E -P "$T/u.asm" 2>&1 | tr '\n' ' ')" = "x y M " ] && echo ok || echo "FAIL: self-%unmacro"
+  # a recursive macro: a handful of errors, not one per leaf of the expansion tree
+  printf '%%macro ANY 0\n ANY\n ANY\n%%endmacro\nANY\n' > "$T/r.asm"
+  n=$("$BIN" -E -P "$T/r.asm" 2>&1 >/dev/null | wc -l); [ "$n" -lt 100 ] && echo ok || echo "FAIL: recursive macro floods ($n lines)"
+  # a deeply nested expression is an error, not a stack overflow
+  awk 'BEGIN { s = "%assign X "; for (i = 0; i < 5000; i++) s = s "("; s = s "1"; for (i = 0; i < 5000; i++) s = s ")"; print s }' > "$T/e.asm"
+  "$BIN" -E -P "$T/e.asm" 2>&1 | grep -q 'nested too deeply' && echo ok || echo "FAIL: deep expression"
+  # a directory is not an input file, an include, or a datafile
+  "$BIN" "$T" >/dev/null 2>&1; [ $? -eq 1 ] && echo ok || echo "FAIL: directory as input is status 1"
+  printf '%%include "."\n' > "$T/d.asm"; "$BIN" -E "$T/d.asm" >/dev/null 2>&1; [ $? -eq 1 ] && echo ok || echo "FAIL: %%include of a directory"
+  # -o naming an input file is refused, and the source survives
+  cp "$T/w.asm" "$T/w2.asm"; "$BIN" -E "$T/w2.asm" -o "$T/w2.asm" >/dev/null 2>&1
+  [ $? -eq 2 ] && [ -s "$T/w2.asm" ] && echo ok || echo "FAIL: -o onto an input file"
+  # --standard: stock accepts a trailing comma in data lists, refuses a bare port value outside OUT
+  printf 'integer 1,\nfloat 1,2,\n' > "$T/tc.asm"; "$BIN" --standard "$T/tc.asm" -o "$T/tc.vbin" 2>/dev/null && echo ok || echo "FAIL: trailing comma"
+  printf 'mov R0, GPUCommand_ClearScreen\n' > "$T/pv.asm"
+  "$BIN" --standard "$T/pv.asm" -o "$T/pv.vbin" >/dev/null 2>&1; [ $? -eq 1 ] && echo ok || echo "FAIL: --standard port value in mov"
+  "$BIN" "$T/pv.asm" -o "$T/pv.vbin" 2>/dev/null && echo ok || echo "FAIL: extended mode keeps port values as numbers"
+  # without -i, a pipe on STDIN is still assembled to STDOUT
+  printf 'mov R0, 1\n' | "$BIN" | od -An -tx1 | head -1 | grep -q '56 33 32 2d 56 42 49 4e' && echo ok || echo "FAIL: STDIN to STDOUT without -i"
+) > "$T/replout" 2>&1
+grep '^FAIL' "$T/replout"
+pass=$((pass + $(grep -c '^ok' "$T/replout")))
+fail=$((fail + $(grep -c '^FAIL' "$T/replout")))
 echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

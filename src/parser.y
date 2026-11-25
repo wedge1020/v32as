@@ -63,6 +63,7 @@ typedef void  *yyscan_t;
 %token T_BAD                 "invalid token"
 
 %token <num>   T_NUMBER      "number"
+%token <num>   T_PORTVAL     "port value"
 %token <reg>   T_REG         "register"
 %token <reg>   T_SYSREG       "internal register"
 %token <port>  T_PORT        "I/O port"
@@ -195,6 +196,8 @@ instruction
         { asm_inst (ctx, &@$, $1, 0, $4, 0, $2, NOIMM); }
     | T_OP_OUT port T_COMMA sint
         { asm_inst (ctx, &@$, $1, 0, 0, 0, $2, imm_any ($4)); }
+    | T_OP_OUT port T_COMMA T_PORTVAL
+        { asm_inst (ctx, &@$, $1, 0, 0, 0, $2, imm_any ($4)); }
 
     /* internal registers IP, IR, IV: expanded by the assembler (see asm.c) */
     | T_OP_MOV reg T_COMMA T_SYSREG
@@ -227,8 +230,8 @@ instruction
     ;
 
 directive
-    : T_DIR_INTEGER { asm_data_begin (ctx); } integer_list { asm_data_end (ctx); }
-    | T_DIR_FLOAT   { asm_data_begin (ctx); } float_list   { asm_data_end (ctx); }
+    : T_DIR_INTEGER { asm_data_begin (ctx); } integer_list trail { asm_data_end (ctx); }
+    | T_DIR_FLOAT   { asm_data_begin (ctx); } float_list trail { asm_data_end (ctx); }
     | T_DIR_POINTER { asm_data_begin (ctx); } pointer_list { asm_data_end (ctx); }
     | T_DIR_STRING T_STRING
         { asm_data_begin (ctx); asm_data_string (ctx, $2); asm_data_end (ctx); }
@@ -254,6 +257,11 @@ global_list
 extern_list
     : T_LABEL                        { asm_sym_declare (ctx, &@1, $1, 1); }
     | extern_list T_COMMA T_LABEL    { asm_sym_declare (ctx, &@3, $3, 1); }
+    ;
+
+trail
+    : %empty
+    | T_COMMA
     ;
 
 integer_list

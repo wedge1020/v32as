@@ -33,6 +33,7 @@
 #include <stdarg.h>
 
 #include "v32as.h"
+#include "portable.h"
 #include "ppexpr.h"
 
 #define  MAX_INCLUDE_DEPTH   20             // same limit as the stock assembler
@@ -368,6 +369,7 @@ struct pp
 
     // multi-line macros, %rep
     smacro_t  *smtab[HASH_SIZE];
+    smacro_t  *dead_macros;         // %unmacro'd while still running: freed at the end of the run
     int        nicase;              // number of case-insensitive macros (of either kind)
     capture_t  cap;
     ctx_t     *ctx;
@@ -626,6 +628,14 @@ void  pp_free (pp_t *p)
             p -> smtab[i] = m -> next;
             smac_free (m);
         }
+    }
+
+    while (p -> dead_macros != NULL)
+    {
+        smacro_t  *m = p -> dead_macros;
+
+        p -> dead_macros = m -> next;
+        smac_free (m);
     }
 
     for (i = 0; i < p -> nctx; i++)
@@ -1088,7 +1098,7 @@ static void  vmsg (pp_t *p, const char *kind, int line, int col, const char *fmt
 }
 
 static void  pp_error_at (pp_t *p, int line, int col, const char *fmt, ...)
-    __attribute__ ((format (printf, 4, 5)));
+    __attribute__ ((format (V32_PRINTF, 4, 5)));
 
 static void  pp_error_at (pp_t *p, int line, int col, const char *fmt, ...)
 {
@@ -1102,7 +1112,7 @@ static void  pp_error_at (pp_t *p, int line, int col, const char *fmt, ...)
 }
 
 static void  pp_error (pp_t *p, int col, const char *fmt, ...)
-    __attribute__ ((format (printf, 3, 4)));
+    __attribute__ ((format (V32_PRINTF, 3, 4)));
 
 static void  pp_error (pp_t *p, int col, const char *fmt, ...)
 {
@@ -1116,7 +1126,7 @@ static void  pp_error (pp_t *p, int col, const char *fmt, ...)
 }
 
 static void  pp_warning_at (pp_t *p, int line, int col, const char *fmt, ...)
-    __attribute__ ((format (printf, 4, 5)));
+    __attribute__ ((format (V32_PRINTF, 4, 5)));
 
 static void  pp_warning_at (pp_t *p, int line, int col, const char *fmt, ...)
 {
@@ -1359,12 +1369,27 @@ static void  hides_live_at (const hides_t *h, size_t pos, hides_t *out)
 static void  splice (buf_t *b, size_t start, size_t end, const char *r, size_t rlen, hides_t *h)
 {
     int  i;
+    int  keep = 0;
+
+    // scanning only moves forward, so a region that ends at or before START can never hide anything again: drop it
+    // (otherwise the list grows with every replacement and a big expansion costs quadratic time)
+    for (i = 0; i < h -> n; i++)
+    {
+        if (h -> v[i].end != SIZE_MAX && h -> v[i].end <= start)
+        {
+            continue;
+        }
+
+        h -> v[keep++] = h -> v[i];
+    }
+
+    h -> n = keep;
 
     for (i = 0; i < h -> n; i++)
     {
         hide_t  *x = &h -> v[i];
 
-        if (x -> end == SIZE_MAX || x -> end <= start)
+        if (x -> end == SIZE_MAX)
         {
             continue;
         }
@@ -2588,6 +2613,12 @@ static int  read_whole_file (const char *path, buf_t *data)
         buf_put (data, chunk, got);
     }
 
+    if (ferror (fp))                    // a directory opens fine with fopen() and then fails to read (EISDIR)
+    {
+        fclose (fp);
+        return (-1);
+    }
+
     fclose (fp);
 
     return (0);
@@ -2732,7 +2763,7 @@ static void  do_include (pp_t *p, frame_t *f, const char *s, size_t n, size_t i,
 
     // %includeonce: a file that asked for it is read only the first time
     {
-        char  *canon = realpath (found, NULL);
+        char  *canon = v32_realpath (found, NULL);
 
         if (canon != NULL && once_contains (p, canon))
         {
@@ -3112,6 +3143,21 @@ static smacro_t  *smac_pick (const pp_t *p, const char *name, size_t n, int narg
     return (NULL);
 }
 
+static int  smac_running (const pp_t *p, const smacro_t *m)
+{
+    int  i;
+
+    for (i = 0; i < p -> nctx; i++)
+    {
+        if (p -> ctx[i].kind == CTX_MACRO && p -> ctx[i].m == m)
+        {
+            return (1);
+        }
+    }
+
+    return (0);
+}
+
 static void  smac_unlink_all (pp_t *p, const char *name, size_t n, int *count)
 {
     smacro_t  **link = &p -> smtab[hash_lower (name, n)];
@@ -3129,7 +3175,16 @@ static void  smac_unlink_all (pp_t *p, const char *name, size_t n, int *count)
                 p -> nicase--;
             }
 
-            smac_free (dead);
+            if (smac_running (p, dead))
+            {
+                dead -> next = p -> dead_macros;    // its body is being replayed: keep it alive
+                p -> dead_macros = dead;
+            }
+            else
+            {
+                smac_free (dead);
+            }
+
             (*count)++;
         }
         else
@@ -3956,7 +4011,7 @@ static int  subst_line (const ctx_t *mc, unsigned serial, int iter, int in_messa
 // Lines inside a nested %rep stay raw until that %rep runs, so that %rotate and the
 // per-iteration %%labels see the right values.
 //
-static void  feed_lines (pp_t *p, frame_t *f, char **line, int n, unsigned iter_serial)
+static void  feed_lines (pp_t *p, frame_t *f, char **line, const int *lineno, int n, unsigned iter_serial)
 {
     int  k;
     int  depth = 0;
@@ -4013,7 +4068,20 @@ static void  feed_lines (pp_t *p, frame_t *f, char **line, int n, unsigned iter_
             return;
         }
 
-        process_line (p, text, len);
+        // a %rep outside any macro: its lines are the lines of the file (a macro's output is the invocation's)
+        if (lineno != NULL && mi < 0)
+        {
+            int  saved = f -> line;
+
+            f -> line = lineno[k];
+            process_line (p, text, len);
+            f -> line = saved;
+        }
+        else
+        {
+            process_line (p, text, len);
+        }
+
         free (b.s);
 
         if (p -> unwind || p -> halt)
@@ -4031,6 +4099,7 @@ static void  exec_macro (pp_t *p, frame_t *f, smacro_t *m, char **args, int narg
     if (p -> nctx >= MAX_CTX_DEPTH)
     {
         pp_error (p, 0, "macro expansion is nested too deeply (is '%s' recursive?)", m -> name);
+        p -> halt = 1;                          // not just this call: a macro that recurses twice would report it 2^64 times
         free_args (args, nargs);
         return;
     }
@@ -4041,17 +4110,18 @@ static void  exec_macro (pp_t *p, frame_t *f, smacro_t *m, char **args, int narg
     c -> nargs  = nargs;
     c -> serial = ++p -> serial;
 
-    feed_lines (p, f, m -> body, m -> nbody, 0);
+    feed_lines (p, f, m -> body, NULL, m -> nbody, 0);
     ctx_leave  (p, f);
 }
 
-static void  exec_rep (pp_t *p, frame_t *f, long count, char **line, int n)
+static void  exec_rep (pp_t *p, frame_t *f, long count, char **line, const int *lineno, int n)
 {
     long  it;
 
     if (p -> nctx >= MAX_CTX_DEPTH)
     {
         pp_error (p, 0, "%%rep is nested too deeply");
+        p -> halt = 1;
         return;
     }
 
@@ -4062,7 +4132,7 @@ static void  exec_rep (pp_t *p, frame_t *f, long count, char **line, int n)
         unsigned  errors = p -> errors;
 
         p -> ctx[p -> nctx - 1].iter = (int) it;
-        feed_lines (p, f, line, n, ++p -> serial);
+        feed_lines (p, f, line, lineno, n, ++p -> serial);
         ctx_balance (p, f);
 
         if (p -> errors != errors)
@@ -4169,7 +4239,7 @@ static void  cap_feed (pp_t *p, frame_t *f, const char *s, size_t n)
         }
         else if (done.count > 0)
         {
-            exec_rep (p, f, done.count, done.line, done.n);
+            exec_rep (p, f, done.count, done.line, done.lineno, done.n);
         }
 
         p -> cap = done;
@@ -5817,7 +5887,7 @@ static unsigned  process_text (pp_t *p, const char *name, const char *text, size
     unsigned   before = p -> errors;
     size_t     pos    = 0;
 
-    f -> canon = realpath (name, NULL);
+    f -> canon = v32_realpath (name, NULL);
 
     // skip a UTF-8 byte order mark (so a directive on the first line is still seen)
     if (len >= 3 && (unsigned char) text[0] == 0xEF && (unsigned char) text[1] == 0xBB
@@ -5907,7 +5977,7 @@ static unsigned  process_stream (pp_t *p, const char *name, FILE *fp)
     buf_t      line   = { 0 };
     int        c, first = 1;
 
-    f -> canon = realpath (name, NULL);
+    f -> canon = v32_realpath (name, NULL);
 
     for (;;)
     {
@@ -5972,6 +6042,9 @@ int  pp_pending (const pp_t *p)
 unsigned  pp_stream_line (pp_t *p, const char *line, size_t len, int lineno)
 {
     unsigned  before = p -> errors;
+
+    p -> halt = 0;                  // each line typed is a new run: a runaway macro must not silence the session
+    p -> work = 0;
 
     frame_top (p) -> line = lineno;
     process_line (p, line, len);

@@ -11,10 +11,11 @@
 #include <stddef.h>
 #include <stdio.h>
 
+#include "portable.h"
 #include "pp.h"
 #include "heapstat.h"
 
-#define  VERSION            "20261121-dev"
+#define  VERSION            "20261125-release"
 
 #define  BIOS_BASE          0x10000000u
 #define  CART_BASE          0x20000000u
@@ -400,9 +401,9 @@ int     asm_write_vsym      (asm_t *a, FILE *fp, const char *(*local) (void *ud,
                              const symline_t *extra, size_t nextra);
 
 void    asm_error           (asm_t *a, const loc_t *loc, const char *fmt, ...)
-                            __attribute__ ((format (printf, 3, 4)));
+                            __attribute__ ((format (V32_PRINTF, 3, 4)));
 void    asm_warn            (asm_t *a, const loc_t *loc, const char *fmt, ...)
-                            __attribute__ ((format (printf, 3, 4)));
+                            __attribute__ ((format (V32_PRINTF, 3, 4)));
 
 sym_t  *asm_sym_intern      (asm_t *a, const char *name, size_t n);
 void    asm_label_define    (asm_t *a, sym_t *s, const loc_t *loc);

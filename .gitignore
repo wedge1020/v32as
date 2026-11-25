@@ -60,3 +60,7 @@ dkms.conf
 /build-cmake/
 *.zip
 *.patch
+
+# ...but never the regression tests' fixtures (golden .hex dumps, v32cc .map
+# files, -E .out goldens, .d-looking names): a clone without them fails `make test`
+!/tests/**

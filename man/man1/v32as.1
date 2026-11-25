@@ -1,4 +1,4 @@
-.TH V32AS 1 "2026-11-21" "v32as 20261121-dev" "Vircon32 assembler manual"
+.TH V32AS 1 "2026-11-25" "v32as 20261125-release" "Vircon32 assembler manual"
 .SH NAME
 v32as \- assembler for the Vircon32 console
 .SH SYNOPSIS
@@ -18,6 +18,9 @@ v32as \- assembler for the Vircon32 console
 .B v32as \-T
 .RI [ options ]
 .IR FILE ...
+.br
+.B v32as \-i
+.RI [ options ]
 .SH DESCRIPTION
 .B v32as
 assembles Vircon32 assembly language into a VBIN file, the format of a
@@ -60,14 +63,19 @@ writes
 A name without an extension simply gets the extension appended.
 Several input files are assembled as one program, in the order given, and share
 one preprocessor state (macros, defines, contexts) and one symbol table.
-Without a file name, or with
+With
 .BR \- ,
+or without a file name when standard input is redirected or a pipe,
 the program is read from standard input; the binary is then written to standard
 output unless
 .B \-o
 is given (it is never written to a terminal).
+Without a file name and with a terminal on standard input,
+.B v32as
+prints its usage summary to standard error and exits with status 2.
 .PP
-When standard input is a terminal and no file is given,
+With
+.BR \-i ,
 .B v32as
 starts an interactive mode: each line is assembled as soon as it is entered.
 The commands are
@@ -135,12 +143,14 @@ The number of data words recorded in the V32X header.
 .BR \-T ", " \-\-text
 Print a human\-readable listing (the instruction encodings) instead of writing a
 VBIN.
-Addresses start at 0 unless
+The addresses
+.RB ( OFFSET:
+lines) are printed only when
 .BR \-b ,
 .BR \-c
 or
 .B \-O
-is given.
+gives a base.
 .TP
 .BR \-n ", " \-\-none
 Same as
@@ -373,10 +383,11 @@ May be repeated. After these (and not with
 .BR \-\-standard )
 v32as also searches the directory the macro libraries were installed in and, next to
 the program,
-.IR lib ", " ../lib ", " ../share/v32as/lib
+.IR lib ", " ../lib ", " ../share/v32as/lib ,
+.I ../Vircon32/v32tools/include/v32as
 and
-.IR ../Vircon32/v32tools/include/v32as ,
-where they exist.
+.I include/v32as
+(the layout of the release zips), where they exist.
 .TP
 .BR \-E ", " \-\-preprocess
 Only run the preprocessor and print the result (to standard output, or to the
@@ -537,6 +548,22 @@ and is ignored with a warning when standard input is not a terminal).
 .BR \-v ", " \-\-verbose
 Trace the assembly of every instruction (the encoded bit fields) to standard
 error.
+.TP
+.BR \-i ", " \-\-interactive
+Start the interactive mode (see DESCRIPTION) on standard input.
+It takes no input files.
+It combines with
+.BR \-b ", " \-c ", " \-O ", " \-T ", " \-n
+(with none of them, addresses start at 0),
+.BR \-D ", " \-U ", " \-I ,
+.BR \-w ", " \-v
+and
+.BR \-\-standard ;
+an option that writes a file or needs a whole program
+.RB ( "\-o \-E \-B \-C \-g \-r \-\-symbols \-\-map \-MD \-\-rom\-xml \-\-rom\-xml\-opt \-\-build\-scripts \-\-v32x \-s" )
+is a usage error.
+Line editing and history are available when v32as was built with GNU readline
+(or macOS's libedit).
 .TP
 .BR \-h ", " \-\-help
 Print the usage text and exit.
@@ -766,8 +793,8 @@ An assembly or preprocessor error, or an input file that cannot be read.
 more than one input file.)
 .TP
 .B 2
-A usage error (bad or conflicting options, or a missing argument), or an output
-file that cannot be written.
+A usage error (bad or conflicting options, a missing argument, or no input file
+with a terminal on standard input), or an output file that cannot be written.
 .SH ENVIRONMENT
 .TP
 .B V32AS_BUILD_SCRIPT
@@ -824,11 +851,14 @@ see
 .BR v32as\-inc (3)
 and
 .BR v32as\-control (3).
-They are found with
-.BR "\-I lib" ;
-.B "make install"
+An installed v32as finds them by itself
+.RB ( "make install"
 puts them in
-.IR PREFIX /share/v32as/lib .
+.IR PREFIX /share/v32as/lib ,
+a release zip in
+.I include/v32as
+beside the program); from the source tree, add
+.BR "\-I lib" .
 .SH EXAMPLES
 Assemble a cartridge program (writes
 .IR hello.vbin ):
@@ -843,7 +873,15 @@ Use the macro library, keep the debug and relocation files and the label table:
 .PP
 .nf
 .RS
-v32as \-I lib \-g \-r hello.rel \-\-symbols hello.sym hello.asm
+v32as \-g \-r hello.rel \-\-symbols hello.sym hello.asm
+.RE
+.fi
+.PP
+Try instructions interactively, at cartridge addresses:
+.PP
+.nf
+.RS
+v32as \-i \-c
 .RE
 .fi
 .PP
@@ -851,7 +889,7 @@ Show what the preprocessor makes of the source:
 .PP
 .nf
 .RS
-v32as \-I lib \-E \-P hello.asm
+v32as \-E \-P hello.asm
 .RE
 .fi
 .PP

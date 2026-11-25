@@ -1,9 +1,43 @@
 # Changes
 
-The development history of `v32as` and `v32asld`, by round, oldest first. The current behaviour of everything
+The development history of `v32as` and `v32asld`, by round, newest first. The current behaviour of everything
 listed here is described in `README.md`; this file records what each round (a set of requests from the
 projects that use the assembler) added or fixed. Before round 9 the assembler had the features described in the
 README's "History and compatibility" section and the preprocessor phases 1 to 3 of `docs/PREPROCESSOR.md`.
+
+## 2026-11-25: first release (20261125-release)
+
+- **`-i, --interactive`** starts the interactive mode. Before, it started whenever there was no input file and STDIN was a
+  terminal; now that case prints the usage summary (STDERR, status 2). A pipe or redirection on STDIN is still assembled to
+  STDOUT, and `-` still reads STDIN. `-i` takes no input files and refuses the options that write files or need a whole
+  program (`-o -E -B -C -g -r --symbols --map -MD --rom-xml --rom-xml-opt --build-scripts --v32x -s`).
+- **`--help` fits an 80-column terminal** (v32as and v32asld), grouped by topic, as a series of `fputs`.
+- **Fixes (crashes and memory safety)**: an output file that cannot be written crashed in `fclose (NULL)` (now status 2); a
+  macro that `%unmacro`s itself while running was used after being freed; a deeply nested `%if`/`%eval`/`%assign` expression
+  overflowed the stack (now "expression is nested too deeply"); on 32-bit hosts (armv7) a corrupt object's word counts could
+  wrap the linker's size check and read out of bounds.
+- **Fixes (behaviour)**: a recursive macro stops at its first "nested too deeply" error instead of one per leaf of the
+  expansion tree (millions of lines); long single-line expansions no longer take quadratic time (`splice` drops spent hide
+  regions); a directory as the input file, `%include` file or `datafile` is an error instead of "out of memory" or empty
+  input; `-o` naming an input file is refused (it used to truncate the source); a listing or `-E` output that stopped at an
+  error is removed, so `make` does not take it as up to date; `--v32x-data` checks its number; `v32asld -A` reads every
+  member before it writes, so a failed run no longer destroys an existing archive; errors inside a `%rep` outside any macro
+  point at the body line, not at `%endrep`.
+- **`--standard` closer to the official tool**: a bare port value only as the value of `out`; a decimal literal above
+  2147483647 and a denormal float are errors; `-0xFFFFFFFF` wraps; a trailing comma in `integer`/`float` lists is accepted;
+  directive keywords are lowercase only. Accepted cases that stay are listed in the README.
+- **Portability**: Windows (MinGW-w64) builds: `inc/portable.h` (`_fullpath` for `realpath`, `gnu_printf` format checks,
+  binary-mode stdio so a VBIN on STDOUT and the text side files are the same bytes as elsewhere), no `getline` in the
+  non-readline REPL, `\` as a path separator for output names and build scripts; the heapstat stubs are `static inline`; the
+  Makefile passes `CFLAGS`/`LDFLAGS` when linking (sanitizer, `-m32` and cross builds); an empty `LIBDIR` (relocatable
+  builds) is skipped.
+- **Release plumbing**: `.github/workflows/release-builds.yml` (Windows x86_64/arm64, macOS, Linux x86_64/arm64/armv7/armv8,
+  optional OpenBSD and Haiku; zips in the `v32tools` layout, checksums, a draft release from `.github/release-notes.md`),
+  `.github/workflows/tests.yml` (the suite on every push: gcc, clang without readline, ASan/UBSan; macOS build), and
+  `scripts/smoke_test.sh` (versions, `%include <...>` from the package layout, `-C` + link, `-i`). `.gitignore` no longer
+  hides the tests' golden `.hex`, `.map` and `.out` files.
+- **Documentation**: `docs/USAGE.md` (a task-oriented guide), README quick start and "How it differs from the official
+  assembler", the library search path and the `--standard` details documented, man pages updated for `-i`.
 
 ## 2026-11-21: memory use, round 2 (VA-7, VA-8, VA-11 of the v32nix proposal), `--stats`
 

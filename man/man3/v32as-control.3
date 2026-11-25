@@ -1,4 +1,4 @@
-.TH V32AS-CONTROL 3 "2026-11-21" "v32as 20261121-dev" "Vircon32 assembler manual"
+.TH V32AS-CONTROL 3 "2026-11-25" "v32as 20261125-release" "Vircon32 assembler manual"
 .SH NAME
 IF, ELSE, ENDIF, WHILE, ENDWHILE \- structured control flow macros for v32as (lib/control.inc)
 .SH SYNOPSIS
@@ -35,9 +35,9 @@ instructions.
 They are written with the extended preprocessor (contexts and private labels),
 so they cannot be used with
 .BR "v32as \-\-standard" .
-Use them with
-.B \-I lib
-and include the file:
+An installed v32as, or one unpacked from a release zip, finds the file by
+itself (from the source tree, add
+.BR "\-I lib" ):
 .PP
 .nf
 .RS

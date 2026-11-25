@@ -21,7 +21,9 @@
 #include <strings.h>
 #include <unistd.h>
 
-#define  VERSION      "20261121-dev"
+#include "portable.h"
+
+#define  VERSION      "20261125-release"
 #define  BIOS_BASE    0x10000000u
 #define  CART_BASE    0x20000000u
 
@@ -116,7 +118,7 @@ static void  *xrealloc (void *p, size_t n)
 // o -> raw takes it (own != 0)
 static int  parse_object (object_t *o, const char *path, unsigned char *buf, size_t size, int own)
 {
-    size_t  need;
+    uint64_t  need;         // 64 bits: the header counts are untrusted, 4 * nwords etc. must not wrap a 32-bit size_t
 
     o -> path = path;
 
@@ -148,8 +150,8 @@ static int  parse_object (object_t *o, const char *path, unsigned char *buf, siz
     o -> ndbg    = get32 (buf + 24);
     o -> strsize = get32 (buf + 28);
 
-    need = 32 + 4 * (size_t) o -> nwords + 12 * ((size_t) o -> nsyms + o -> nrels)
-           + (size_t) o -> dbgsz * o -> ndbg + o -> strsize;
+    need = 32 + 4 * (uint64_t) o -> nwords + 12 * ((uint64_t) o -> nsyms + o -> nrels)
+           + (uint64_t) o -> dbgsz * o -> ndbg + o -> strsize;
 
     o -> nvars = 0;
     o -> vars  = NULL;
@@ -159,7 +161,7 @@ static int  parse_object (object_t *o, const char *path, unsigned char *buf, siz
     if (o -> version == 4)
     {
         // after the string table: the ;@lang (string offset), its flags, then as in version 3
-        if (size < need + 12)
+        if ((uint64_t) size < need + 12)
         {
             fprintf (stderr, "v32asld: %s: corrupt object (size does not match its header)\n", path);
             return (-1);
@@ -169,12 +171,12 @@ static int  parse_object (object_t *o, const char *path, unsigned char *buf, siz
         o -> langflags = get32 (buf + need + 4);
         o -> nvars     = get32 (buf + need + 8);
         o -> vars      = buf + need + 12;
-        need          += 12 + 36 * (size_t) o -> nvars;
+        need          += 12 + 36 * (uint64_t) o -> nvars;
     }
     else if (o -> version == 3)
     {
         // after the string table: the number of ;@var / ;@scope records, then 9 words each
-        if (size < need + 4)
+        if ((uint64_t) size < need + 4)
         {
             fprintf (stderr, "v32asld: %s: corrupt object (size does not match its header)\n", path);
             return (-1);
@@ -182,10 +184,10 @@ static int  parse_object (object_t *o, const char *path, unsigned char *buf, siz
 
         o -> nvars = get32 (buf + need);
         o -> vars  = buf + need + 4;
-        need      += 4 + 36 * (size_t) o -> nvars;
+        need      += 4 + 36 * (uint64_t) o -> nvars;
     }
 
-    if (need != size)
+    if (need != (uint64_t) size)
     {
         fprintf (stderr, "v32asld: %s: corrupt object (size does not match its header)\n", path);
         return (-1);
@@ -224,13 +226,17 @@ static unsigned char  *read_file (const char *path, size_t *size)
         return (NULL);
     }
 
-    fseek (fp, 0, SEEK_END);
-    n = ftell (fp);
-    fseek (fp, 0, SEEK_SET);
+    // (a directory opens fine on POSIX systems, with a bogus size)
+    if (fseek (fp, 0, SEEK_END) != 0 || (n = ftell (fp)) < 0 || n >= 0x7FFFFFFFl || fseek (fp, 0, SEEK_SET) != 0)
+    {
+        fprintf (stderr, "v32asld: cannot read '%s'%s\n", path, errno == EISDIR ? ": Is a directory" : "");
+        fclose (fp);
+        return (NULL);
+    }
 
     buf = xrealloc (NULL, (size_t) n + 1);
 
-    if (n < 0 || fread (buf, 1, (size_t) n, fp) != (size_t) n)
+    if (fread (buf, 1, (size_t) n, fp) != (size_t) n)
     {
         fprintf (stderr, "v32asld: cannot read '%s'\n", path);
         fclose (fp);
@@ -277,43 +283,76 @@ static void  put_padded (FILE *fp, const void *data, size_t n)
 
 static int  make_archive (const char *out, char **files, int nfiles)
 {
-    FILE  *fp = fopen (out, "wb");
-    int    i;
+    FILE            *fp;
+    int              i, rc = 0;
+    unsigned char  **buf  = xrealloc (NULL, (size_t) (nfiles + 1) * sizeof (unsigned char *));
+    size_t          *size = xrealloc (NULL, (size_t) (nfiles + 1) * sizeof (size_t));
 
-    if (fp == NULL)
+    // read and check every member first: a bad one must not leave a truncated archive (or destroy
+    // an existing one, or the very object that was named as the output)
+    for (i = 0; i < nfiles; i++)
     {
-        fprintf (stderr, "v32asld: cannot write '%s': %s\n", out, strerror (errno));
-        return (2);
+        object_t  o;
+
+        buf[i] = read_file (files[i], &size[i]);
+
+        if (buf[i] == NULL || parse_object (&o, files[i], buf[i], size[i], 0) != 0)
+        {
+            rc = 2;
+            nfiles = i + 1;
+            break;
+        }
     }
 
-    fwrite ("V32-VARC", 1, 8, fp);
-    put32  (fp, 1);
-    put32  (fp, (uint32_t) nfiles);
+    if (rc == 0)
+    {
+        fp = fopen (out, "wb");
+
+        if (fp == NULL)
+        {
+            fprintf (stderr, "v32asld: cannot write '%s': %s\n", out, strerror (errno));
+            rc = 2;
+        }
+        else
+        {
+            fwrite ("V32-VARC", 1, 8, fp);
+            put32  (fp, 1);
+            put32  (fp, (uint32_t) nfiles);
+
+            for (i = 0; i < nfiles; i++)
+            {
+                const char  *name = strrchr (files[i], '/');
+#ifdef _WIN32
+                const char  *bs = strrchr (files[i], '\\');
+
+                if (bs != NULL && (name == NULL || bs > name))  { name = bs; }
+#endif
+                name = name ? name + 1 : files[i];
+
+                put32      (fp, (uint32_t) strlen (name));
+                put_padded (fp, name, strlen (name));
+                put32      (fp, (uint32_t) size[i]);
+                put_padded (fp, buf[i], size[i]);
+            }
+
+            if (ferror (fp) | (fclose (fp) != 0))
+            {
+                fprintf (stderr, "v32asld: error writing '%s'\n", out);
+                remove (out);
+                rc = 2;
+            }
+        }
+    }
 
     for (i = 0; i < nfiles; i++)
     {
-        size_t          size;
-        unsigned char  *buf = read_file (files[i], &size);
-        object_t        o;
-        const char     *name = strrchr (files[i], '/');
-
-        name = name ? name + 1 : files[i];
-
-        if (buf == NULL || parse_object (&o, files[i], buf, size, 0) != 0)
-        {
-            fclose (fp);
-            remove (out);
-            return (2);
-        }
-
-        put32      (fp, (uint32_t) strlen (name));
-        put_padded (fp, name, strlen (name));
-        put32      (fp, (uint32_t) size);
-        put_padded (fp, buf, size);
-        free       (buf);
+        free (buf[i]);
     }
 
-    return (fclose (fp) != 0 ? 2 : 0);
+    free (buf);
+    free (size);
+
+    return (rc);
 }
 
 static osym_t  osym (const object_t *o, uint32_t i)
@@ -894,40 +933,42 @@ static int  partial_link (object_t *obj, int nobj, const char *output)
 
 static void  usage (FILE *fp)
 {
-    fprintf (fp,
-        "usage: v32asld [OPTION...] OBJECT...\n"
-        "Link relocatable objects (made by 'v32as -C') into a VBIN file.\n"
-        "\n"
-        "  -o, --output=FILE    output file (default: a.vbin)\n"
-        "  -b, --bios           link for the BIOS (addresses start at 0x10000000)\n"
-        "  -c, --cart           link for a cartridge (0x20000000; this is the default)\n"
-        "  -O, --origin ADDR    link for an arbitrary base address\n"
-        "  -g, --debug[=MODE]   also write FILE.debug (address,file,line[,label]); MODE is\n"
-        "                       program (default), vbin or v32, as in 'v32as -g'\n"
-        "      --symbols=FILE   write 'address,name,kind' for every label (kind F: code, D: data)\n"
-        "      --v32x           write a V32X executable (v32nix, inc/exec.h) instead of a VBIN: an 8-word\n"
-        "                       header, then the image. Needs --data; the base defaults to 0x100000 (the\n"
-        "                       window base) and is the header's origin. --entry then is a global label or a\n"
-        "                       word offset into the image (default 0), recorded in the header, and no\n"
-        "                       jump is added\n"
-        "      --data=WORDS     with --v32x: zeroed global-variable words behind the image\n"
-        "      --entry=SYMBOL   the program starts at SYMBOL: when it is not the first word, a\n"
-        "                       two-word 'jmp SYMBOL' is placed in front of the first object\n"
-        "  -L DIR, -l NAME      search DIR for NAME.v32a, then libNAME.a (archives given by name or as operands are\n"
-        "                       scanned after the objects; a member is linked in only when it defines\n"
-        "                       a symbol that is still undefined)\n"
-        "  -A, --archive=FILE   make an archive FILE of the objects given, instead of linking\n"
-        "  -r, --relocs=FILE    write 'index,value[,kind]' for every word that holds an address (also\n"
-        "      --emit-relocs=FILE  spelled --emit-relocs); with a datasym in the objects the kind is C (code\n"
-        "                       address) or D (data address), as in 'v32as -r'\n"
-        "  -R, --relocatable    do not link: join the objects into one object (-o FILE, default a.v32ob)\n"
-        "                       that keeps the relocations and the externs still undefined\n"
-        "  -w, --no-warnings    do not warn about an extern that no code uses\n"
-        "  -h, --help           display this usage information and exit\n"
-        "  -V, --version        display the version and exit\n"
-        "\n"
-        "Objects are placed in command line order; the first word of the first object is\n"
-        "the entry point.\n");
+    // the text is laid out for an 80-column terminal (no line over 79 characters)
+    fputs ("usage: v32asld [OPTION...] OBJECT...\n"
+           "Link relocatable objects (made by 'v32as -C') into a VBIN file.\n"
+           "\n", fp);
+    fputs ("  -o, --output=FILE    output file (default: a.vbin)\n"
+           "  -b, --bios           link for the BIOS (addresses start at 0x10000000)\n"
+           "  -c, --cart           link for a cartridge (0x20000000; the default)\n"
+           "  -O, --origin=ADDR    link for any base address\n"
+           "  -g, --debug[=MODE]   also write OUTPUT.debug (address,file,line[,label]) and\n"
+           "                       OUTPUT.sym, and OUTPUT.vars when the objects carry\n"
+           "                       ;@var information; MODE is program (default), vbin or\n"
+           "                       v32, as in 'v32as -g'\n"
+           "      --symbols=FILE   write 'address,name,kind' for every label\n"
+           "                       (kind F: code, D: data)\n"
+           "  -r, --relocs=FILE    write 'index,value[,kind]' for every word that holds an\n"
+           "      --emit-relocs=FILE  address; with a datasym in the objects the kind is\n"
+           "                       C (code address) or D (data address), as in 'v32as -r'\n"
+           "      --entry=SYMBOL   start at SYMBOL: unless it is the first word, a two-word\n"
+           "                       'jmp SYMBOL' is placed in front of the first object\n"
+           "      --v32x           write a V32X executable (v32nix) instead of a VBIN: an\n"
+           "                       8-word header, then the image; needs --data. The base\n"
+           "                       defaults to 0x100000; --entry is then a global label or\n"
+           "                       a word offset (default 0) recorded in the header\n"
+           "      --data=WORDS     with --v32x: zeroed global-variable words after it\n"
+           "  -L DIR, -l NAME      search DIR for NAME.v32a, then libNAME.a; archives are\n"
+           "                       scanned after the objects, and a member is linked in\n"
+           "                       only when it defines a symbol still undefined\n"
+           "  -A, --archive=FILE   make an archive FILE of the objects, instead of linking\n"
+           "  -R, --relocatable    do not link: join the objects into one object (-o FILE,\n"
+           "                       default a.v32ob) that keeps relocations and externs\n"
+           "  -w, --no-warnings    do not warn about an extern that no code uses\n"
+           "  -h, --help           display this usage information and exit\n"
+           "  -V, --version        display the version and exit\n"
+           "\n", fp);
+    fputs ("Objects are placed in command line order; the first word of the first object\n"
+           "is the entry point.\n", fp);
 }
 
 int  main (int argc, char **argv)
@@ -974,6 +1015,8 @@ int  main (int argc, char **argv)
     FILE        *fp;
     char        *wkind = NULL;
     int          has_datasym = 0, partial = 0;
+
+    v32_binary_mode ();
 
     while ((c = getopt_long (argc, argv, "bcO:o:g::r:RwhVL:l:A:", long_options, NULL)) != -1)
     {
@@ -1164,16 +1207,16 @@ int  main (int argc, char **argv)
                 char     *label;
                 size_t    nlp;
 
-                if (at + 4 > size || (nl = get32 (buf + at), 0) || at + 4 + ((size_t) nl + 3) / 4 * 4 + 4 > size)
+                if ((uint64_t) at + 4 > size || (nl = get32 (buf + at), 0) || (uint64_t) at + 4 + ((uint64_t) nl + 3) / 4 * 4 + 4 > size)
                 {
                     fprintf (stderr, "v32asld: %s: corrupt archive\n", path);
                     return (2);
                 }
 
-                nlp = ((size_t) nl + 3) / 4 * 4;
+                nlp = ((size_t) nl + 3) / 4 * 4;      // fits: checked just above
                 ds  = get32 (buf + at + 4 + nlp);
 
-                if (at + 8 + nlp + ds > size)
+                if ((uint64_t) at + 8 + nlp + ds > size)
                 {
                     fprintf (stderr, "v32asld: %s: corrupt archive\n", path);
                     return (2);

@@ -33,7 +33,7 @@
     yylloc->last_column   = yyextra->lex_col - 1;
 
 static int  lex_fail (asm_t *a, const loc_t *loc, const char *fmt, ...)
-            __attribute__ ((format (printf, 3, 4)));
+            __attribute__ ((format (V32_PRINTF, 3, 4)));
 
 static int  lex_fail (asm_t *a, const loc_t *loc, const char *fmt, ...)
 {
@@ -58,7 +58,9 @@ static int  lex_number (asm_t *a, const loc_t *loc, YYSTYPE *lv, const char *dig
     errno = 0;
     value = strtoull (digits, NULL, base);
 
-    if (errno != 0 || value > 0xFFFFFFFFull)
+    // the official tool reads decimal with stoi: above INT_MAX is an error
+    if (errno != 0 || value > 0xFFFFFFFFull
+        || (a -> standard && base == 10 && value > 0x7FFFFFFFull))
     {
         return (lex_fail (a, loc, "number out of range for a 32-bit value"));
     }
@@ -191,9 +193,13 @@ IDENT       [A-Za-z_][A-Za-z0-9_]*
                             return (tok);
                         }
 [0-9]+"."[0-9]+         {
-                            float  f = strtof (yytext, NULL);
+                            float  f;
 
-                            if (isinf (f))
+                            errno = 0;
+                            f = strtof (yytext, NULL);
+
+                            // the official tool (stof) also refuses underflow
+                            if (isinf (f) || (yyextra -> standard && errno == ERANGE))
                             {
                                 return (lex_fail (yyextra, yylloc, "number out of range for a float"));
                             }
@@ -292,6 +298,12 @@ _[A-Za-z0-9_]+":"       {
                                 k = NULL;
                             }
 
+                            if (k != NULL && yyextra -> standard && k -> kind == KW_DIRECTIVE
+                                && strncmp (yytext, k -> name, yyleng) != 0)
+                            {
+                                k = NULL;
+                            }
+
                             if (k != NULL)
                             {
                                 switch (k -> kind)
@@ -309,6 +321,11 @@ _[A-Za-z0-9_]+":"       {
                                         return (T_PORT);
 
                                     case KW_PORTVALUE:
+                                        yylval -> num.bits     = k -> value;
+                                        yylval -> num.is_float = 0;
+                                        // the official tool takes a port value only as the value of OUT
+                                        return (yyextra -> standard ? T_PORTVAL : T_NUMBER);
+
                                     case KW_CONSTANT:
                                         yylval -> num.bits     = k -> value;
                                         yylval -> num.is_float = 0;

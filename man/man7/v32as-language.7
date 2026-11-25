@@ -1,4 +1,4 @@
-.TH V32AS-LANGUAGE 7 "2026-11-21" "v32as 20261121-dev" "Vircon32 assembler manual"
+.TH V32AS-LANGUAGE 7 "2026-11-25" "v32as 20261125-release" "Vircon32 assembler manual"
 .SH NAME
 v32as\-language \- summary of the assembly language and preprocessor accepted by v32as
 .SH DESCRIPTION
@@ -252,11 +252,14 @@ Replaced anywhere in a line by the value of the expression.
 Case\-insensitive define; define expanded now; both.
 .TP
 .B %include <name>
-Searches only the
+Searches the
 .B \-I
-directories.
+directories, then the library directories (see
+.B \-I
+in
+.BR v32as (1)).
 .B %include "name"
-tries the including file's directory first.
+tries the including file's directory first, then the same list.
 .B %includeonce
 and
 .B "%pragma once"

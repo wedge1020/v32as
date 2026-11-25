@@ -43,7 +43,7 @@ heapstat_t  heapstat_get   (void);
 void        heapstat_mark  (void);      // note live and peak now (a later mark replaces an earlier one)
 #else
 // no counting here: stubs, so that heapstat.c need not be built or linked (v32nix builds a fixed list of sources without it)
-static heapstat_t  heapstat_get (void)
+static inline heapstat_t  heapstat_get (void)
 {
     heapstat_t  h = { 0, 0, 0, 0, 0, 0, 0 };
 
@@ -51,7 +51,7 @@ static heapstat_t  heapstat_get (void)
 }
 
 #if !defined(__V32CC__)
-static void  heapstat_mark (void)
+static inline void  heapstat_mark (void)
 {
 }
 #endif
@@ -102,7 +102,7 @@ static void  heapstat_begin (void)
     heapstat_sample ();
 }
 
-static void  heapstat_mark (void)
+static inline void  heapstat_mark (void)
 {
     int  e;
 

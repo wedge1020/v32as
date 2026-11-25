@@ -1,0 +1,4 @@
+# 1 "expand/include.asm"
+; first
+# 3 "expand/include.asm"
+  mov R0, 5

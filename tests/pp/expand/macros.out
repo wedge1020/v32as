@@ -1,0 +1,11 @@
+# 10 "expand/macros.asm"
+
+_start:
+    imax  R1, 0           ; keep this comment
+    imin  R1, 255
+before:
+    imax  R2, 5           ; keep this comment
+    imin  R2, 9
+    __M3_x_1: nop
+    __M3_x_2: nop
+    mov R3, 1

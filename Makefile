@@ -53,11 +53,11 @@ debug: all
 
 bin/$(PROJ): $(OBJ)
 	@mkdir -p bin
-	$(CC) -o $@ $(OBJ) $(LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJ) $(LIBS)
 
 bin/v32asld: $(SRC)/ld.c
 	@mkdir -p bin
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 $(BUILD):
 	@mkdir -p $(BUILD)

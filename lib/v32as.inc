@@ -1,6 +1,6 @@
 ; v32as.inc: small helper macros for v32as (needs the extended preprocessor, so not --standard)
 ;
-;   %include "v32as.inc"          (put this directory on the path with -I lib)
+;   %include <v32as.inc>          (found beside an installed v32as; from the source tree, -I lib)
 ;
 ; Every macro checks its operands with the %if tests, so a mistake is reported at the
 ; line that made it:   INC 5   ->   error: INC: the first operand must be a register

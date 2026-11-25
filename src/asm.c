@@ -1643,7 +1643,7 @@ num_t  num_negate (asm_t *a, const loc_t *loc, num_t n)
     {
         n.bits = n.bits ^ 0x80000000u;
     }
-    else if (n.bits > 0x80000000u)
+    else if (n.bits > 0x80000000u && !a -> standard)
     {
         asm_error (a, loc, "number out of range for a negative 32-bit value");
     }
@@ -2305,6 +2305,12 @@ void  asm_data_file (asm_t *a, const loc_t *loc, str_t path)
         }
     }
 
+    if (ferror (fp))
+    {
+        asm_error (a, loc, "cannot read data file \"%s\"", path.p);
+        carried = 0;
+    }
+
     fclose (fp);
 
     if (carried != 0)
@@ -2883,7 +2889,10 @@ int  asm_write_relocs (asm_t *a, FILE *fp)
 {
     size_t  i;
 
-    qsort (a -> rel, a -> nrel, sizeof (rel_t), rel_cmp);
+    if (a -> nrel > 1)
+    {
+        qsort (a -> rel, a -> nrel, sizeof (rel_t), rel_cmp);
+    }
 
     for (i = 0; i < a -> nrel; i++)
     {
@@ -3778,7 +3787,10 @@ int  asm_write_object (asm_t *a, FILE *fp)
     // relocations: one per word that holds an address, in word order
     if (a -> nrel > 1)
     {
+        if (a -> nrel > 1)
+    {
         qsort (a -> rel, a -> nrel, sizeof (rel_t), rel_cmp);
+    }
     }
 
     for (i = 0; i < a -> nrel; i++)
