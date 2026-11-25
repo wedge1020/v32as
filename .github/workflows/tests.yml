@@ -2,13 +2,19 @@ name: Tests
 
 # The regression suite on every push and pull request: a plain build, a
 # build without readline, and an AddressSanitizer/UBSan build on Linux,
-# and a clang build on macOS (BSD userland: od, sed, wc).
+# and a clang build on macOS (BSD userland: od, sed, wc). The realcheck job
+# compares v32as with the official assembler, built from the current
+# vircon32/ComputerSoftware: its sample corpora on every push, plus the
+# ~52,000-program operand sweep on manual and weekly runs.
 # Release packages are made by release-builds.yml, started by hand.
 
 on:
   push:
   pull_request:
   workflow_dispatch:
+  # weekly, for the realcheck job's full sweep against the current official tools
+  schedule:
+    - cron: '17 6 * * 1'
 
 permissions:
   contents: read
@@ -23,25 +29,43 @@ jobs:
         include:
           - name: gcc
             cc: gcc
-            make-flags: ''
           - name: clang, no readline
             cc: clang
-            make-flags: READLINE=0
+            readline: '0'
           - name: gcc, ASan + UBSan
             cc: gcc
-            make-flags: >-
-              CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
-              LIBS="-lm -fsanitize=address,undefined"
+            san-cflags: -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined
+            san-libs: -lm -fsanitize=address,undefined
+    # The flags travel as environment variables and are expanded inside
+    # double quotes, so a value with spaces stays one make argument (no
+    # eval: it would split them again).
+    env:
+      CC: ${{ matrix.cc }}
+      READLINE: ${{ matrix.readline || 'auto' }}
+      SAN_CFLAGS: ${{ matrix.san-cflags }}
+      SAN_LIBS: ${{ matrix.san-libs }}
+      # main() returns early on usage errors without freeing its argv
+      # arrays: by design, so the leak checker is off (ASan still checks
+      # every access)
+      ASAN_OPTIONS: detect_leaks=0
     steps:
       - uses: actions/checkout@v4
       - name: Install flex, bison and readline
         run: sudo apt-get update && sudo apt-get install -y flex bison libreadline-dev
       - name: Build
-        run: eval make -j"$(nproc)" CC=${{ matrix.cc }} ${{ matrix.make-flags }}
+        run: |
+          if [ -n "$SAN_CFLAGS" ]; then
+            make -j"$(nproc)" CC="$CC" READLINE="$READLINE" CFLAGS="$SAN_CFLAGS" LIBS="$SAN_LIBS"
+          else
+            make -j"$(nproc)" CC="$CC" READLINE="$READLINE"
+          fi
       - name: Test
-        env:
-          ASAN_OPTIONS: detect_leaks=0   # main() returns early on usage errors without freeing its argv arrays: by design
-        run: eval make test CC=${{ matrix.cc }} ${{ matrix.make-flags }}
+        run: |
+          if [ -n "$SAN_CFLAGS" ]; then
+            make test CC="$CC" READLINE="$READLINE" CFLAGS="$SAN_CFLAGS" LIBS="$SAN_LIBS"
+          else
+            make test CC="$CC" READLINE="$READLINE"
+          fi
       - name: Lint the Manual Pages
         run: make mancheck
       - name: Smoke Test (package layout)
@@ -64,3 +88,29 @@ jobs:
         run: make test CC=clang
       - name: Smoke Test (package layout)
         run: sh scripts/smoke_test.sh bin lib
+
+  realcheck:
+    name: Against the official assembler
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the official tools' sources
+        run: git clone --depth 1 https://github.com/vircon32/ComputerSoftware.git ../ComputerSoftware
+      - name: Install flex and bison
+        run: sudo apt-get update && sudo apt-get install -y flex bison
+      - name: Build
+        run: make -j"$(nproc)" READLINE=0
+      - name: Compare (sample corpora; plus the operand sweep on manual and weekly runs)
+        run: |
+          if [ "${{ github.event_name }}" = push ] || [ "${{ github.event_name }}" = pull_request ]; then
+            make realcheck
+          else
+            make realcheck COMBO=1 JOBS="$(nproc)"
+          fi
+      - name: Keep the Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: realcheck-report
+          path: build/realcheck/report.txt
+          retention-days: 14

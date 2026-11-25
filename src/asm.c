@@ -2223,11 +2223,18 @@ static FILE  *open_data_file (asm_t *a, const loc_t *loc, const char *path, char
         return (fp);
     }
 
+    // the official assembler opens the path as written, from the current directory, and nowhere else:
+    // under --standard that comes first, so a program it assembles gets the same file
+    if (a -> standard)
+    {
+        fp = try_data_file ("", 0, path, tried, found);
+    }
+
     // the data file is looked up next to the file the "datafile" line really came from
     asm_resolve (a, loc -> first_line, &cur, &line, &expanded);
     slash = strrchr (cur, '/');
 
-    if (slash != NULL)
+    if (fp == NULL && slash != NULL)
     {
         fp = try_data_file (cur, (size_t) (slash - cur) + 1, path, tried, found);
     }

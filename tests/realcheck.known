@@ -1,0 +1,8 @@
+# realcheck: differences from the official assembler that are deliberate.
+# One line per case: CORPUS NAME, a tab, the reason. A FAIL for a case
+# listed here is reported as "known" instead (for a stock-asm case, the
+# cartridge and the BIOS runs alike).
+v32as errors/bad_number.asm	0x1FFFFFFFF: the official tool reads hex with a 64-bit stoul and drops the high bits; v32as refuses a literal that does not fit in 32 bits
+v32as errors/pp_unterminated.asm	an unterminated %if: the official tool accepts it silently; --standard warns, extended mode makes it an error (docs/PREPROCESSOR.md, Tier 0)
+v32as std/unterminated_only_warns.asm	the same: an unterminated %if is an error in extended mode, a warning under --standard
+v32as std/hex_name_is_ident.asm	ABh: an identifier to the official tool (and --standard), the number 0xAB in extended mode (README, numbers)

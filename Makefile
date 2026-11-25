@@ -157,4 +157,14 @@ version:
 	@rm -f inc/v32as.h.bak $(SRC)/ld.c.bak $(addsuffix .bak,$(MANPAGES))
 	@grep -n '^#define  VERSION' inc/v32as.h $(SRC)/ld.c; for f in $(MANPAGES); do sed -n 1p $$f; done
 
-.PHONY: all debug test install uninstall sysinstall sysuninstall mancheck clean archive version
+# the official assembler, compared: needs a checkout of the official ComputerSoftware repository,
+# found next to this one (../ComputerSoftware or ../ComputerSoftware.git) or named with STOCK=DIR.
+# Builds its assemble and compile with $(CXX) into build/realcheck/stock; COMBO=1 adds ~52,000
+# one-line programs (every opcode with every pair of operand forms; JOBS=N workers, default 4).
+STOCK ?= $(firstword $(wildcard ../ComputerSoftware ../ComputerSoftware.git))
+realcheck: all
+	@if [ -z "$(STOCK)" ]; then \
+	    echo "realcheck: no ComputerSoftware checkout next to this one; use: make realcheck STOCK=DIR" >&2; exit 2; fi
+	@sh tests/realcheck.sh $(if $(COMBO),--combo) "$(STOCK)" bin/$(PROJ)
+
+.PHONY: all debug test realcheck install uninstall sysinstall sysuninstall mancheck clean archive version

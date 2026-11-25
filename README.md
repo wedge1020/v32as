@@ -55,7 +55,8 @@ Unpack one into your `v32tools` folder, or anywhere on your `PATH`.
 
 ```
     make            # builds bin/v32as and bin/v32asld  (needs flex, bison, cc; readline optional)
-    make test       # differential/golden tests (including .debug files) (sh + od + cmp + grep only)
+    make test       # differential/golden tests (including .debug files) (POSIX sh + od + cmp + grep; GNU or BSD)
+    make realcheck  # against the official assembler, built from a ComputerSoftware checkout (see below)
     make install    # v32as, v32asld, lib/*.inc and the man pages into ~/bin, ~/share/v32as/lib and ~/man
     make install PREFIX=/usr/local     # or any other PREFIX: PREFIX/bin, PREFIX/share/man, PREFIX/share/v32as/lib
     make sysinstall # make install PREFIX=/usr/local
@@ -385,7 +386,7 @@ program is portable to it):
 | `%define` | a value that contains its own name, or a `%`, is an error |
 | `%include` | `"file"` only, relative to the including file only (no `-I`, no `<file>`) |
 | operands | `label +/- integer` is an error |
-| `datafile` | looked up next to the source file, then in the current directory (no `-I`) |
+| `datafile` | the path as written, from the current directory, as the official tool opens it; then (a leniency) next to the source file. No `-I` |
 | command line | one input file only; `-s` does nothing; `-v` prints the official stage messages |
 | unterminated `%if` | a warning (the official tool accepts it silently) |
 
@@ -619,6 +620,19 @@ Output is  byte-identical to the  official Vircon32 assembler  for: every
 opcode in every  legal operand form, all I/O ports  and port values (BIOS
 and CART), and all data directives. `tests/golden/*.hex` were produced by
 the official assembler. `make test` runs the golden, differential and error-message tests.
+
+`make realcheck` checks that against the official tools themselves. It needs a checkout of the official
+[ComputerSoftware](https://github.com/vircon32/ComputerSoftware) repository next to this one (`../ComputerSoftware` or
+`../ComputerSoftware.git`) or named with `STOCK=DIR`, builds its `assemble` and `compile` with `c++` into
+`build/realcheck/stock` (no SDL needed), and then assembles with the official tool, `v32as --standard` and plain `v32as`:
+the official assembler's sample programs (as cartridge and BIOS), the C compiler's test programs as shipped and as the
+official compiler compiles them now, the ROM packer's test, and this project's own test sources. A program the official
+tool assembles must give the same VBIN, byte for byte, in both modes, and the same `-g` files in all three modes; one it
+refuses should be refused by `--standard` (the few that are not are listed as leniencies). `make realcheck COMBO=1`
+(`JOBS=N` workers) adds every opcode with none, one and two operands from a pool of 28 operand forms, about 52,000
+one-line programs. Deliberate differences are in `tests/realcheck.known`; the details of a run are in
+`build/realcheck/report.txt`. The `Tests` workflow runs it against the current official sources on every push, and with
+the full sweep weekly.
 
 ## License
 

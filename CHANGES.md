@@ -38,6 +38,13 @@ README's "History and compatibility" section and the preprocessor phases 1 to 3 
   hides the tests' golden `.hex`, `.map` and `.out` files.
 - **Tests run on macOS/BSD**: `tests/run_tests.sh` no longer needs GNU `od -w` (a `hex4` helper over plain `od`, in the
   goldens' format) or GNU `wc` spacing; `tests.yml` runs the suite on macOS too.
+- **`make realcheck`** (`tests/realcheck.sh`): builds the official `assemble` and `compile` from a ComputerSoftware
+  checkout (`../ComputerSoftware[.git]` or `STOCK=DIR`) and compares VBIN and `-g` output (all three modes) for its
+  sample programs, the C tests (shipped and freshly compiled), the ROM packer test and this project's test sources;
+  `COMBO=1` adds ~52,000 opcode/operand programs. First run: 593 agree (51,812 with `COMBO=1`), 0 differences beyond
+  `tests/realcheck.known`. CI runs it on every push (and the sweep weekly).
+- **`--standard` `datafile` lookup**: the current directory first, as the official tool opens the path (found by
+  realcheck: a same-named file next to an included source could be picked instead); next to the source stays as a fallback.
 - **Documentation**: `docs/USAGE.md` (a task-oriented guide), README quick start and "How it differs from the official
   assembler", the library search path and the `--standard` details documented, man pages updated for `-i`.
 
