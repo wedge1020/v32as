@@ -1,5 +1,5 @@
 #!/bin/sh
-# usage: run_tests.sh path/to/v32asc   (needs only sh, od, cmp, grep)
+# usage: run_tests.sh path/to/v32asc   (needs only POSIX sh, od, cmp, grep, sed, tr: GNU or BSD/macOS)
 BIN=${1:-../bin/v32asc}
 cd "$(dirname "$0")" || exit 1
 case $BIN in /*) ;; *) BIN=$OLDPWD/$BIN ;; esac
@@ -9,10 +9,13 @@ T=${TMPDIR:-/tmp}/v32asc_test.$$; mkdir -p "$T"; trap 'rm -rf "$T"' EXIT
 pass=0; fail=0
 ok()  { pass=$((pass+1)); }
 bad() { fail=$((fail+1)); echo "FAIL: $1"; }
+# one 32-bit word per line, as GNU 'od -An -tx4 -v -w4' prints it (" 2000000a"), with plain POSIX od
+# (BSD/macOS od has no -w): the golden .hex files are in this format
+hex4() { od -An -tx4 -v "$@" | tr -s ' \t' '\n\n' | sed -e '/^$/d' -e 's/^/ /'; }
 for g in golden/*.hex; do
   b=$(basename "$g" .hex); name=${b%.*}; mode=${b##*.}
   "$BIN" --$mode --binary -o "$T/o.vbin" cases/$name.asm 2>"$T/err" || { bad "$b (assemble)"; continue; }
-  od -An -tx4 -v -w4 "$T/o.vbin" > "$T/o.hex"
+  hex4 "$T/o.vbin" > "$T/o.hex"
   cmp -s "$T/o.hex" "$g" && ok || bad "$b (output differs)"
 done
 for g in golden/*.debug; do
@@ -72,7 +75,7 @@ for f in std/*.ref; do
 done
 # label +/- constant, the relocation list (-r) and the compiler debug map (--map)
 printf '  mov R0, _t+2\n  mov R1, [_t-1]\n  pointer _t+1\n_t: hlt\n' > "$T/lo.asm"
-"$BIN" --cart -w -o "$T/lo.vbin" "$T/lo.asm" && od -An -tx4 -v -w4 "$T/lo.vbin" | tail -n +4 | tr -d '\n' \
+"$BIN" --cart -w -o "$T/lo.vbin" "$T/lo.asm" && hex4 "$T/lo.vbin" | tail -n +4 | tr -d '\n' \
   | grep -q '^ 4e000000 20000007 4e208000 20000004 20000006 00000000$' && ok || bad "label + constant"
 "$BIN" --standard --none "$T/lo.asm" >/dev/null 2>&1 && bad "label + constant under --standard" || ok
 ( cd map && "$BIN" --cart -w -o "$T/r.vbin" -r "$T/r.rel" labeloff.asm ) 2>/dev/null
@@ -117,7 +120,7 @@ printf '_a:\n  mov R0, _a\n' > "$T/b.asm"
 "$BIN" "$T/x.asm" 2>&1 >/dev/null | grep -q "octal here" && ok || bad "octal literals warn"
 "$BIN" -w "$T/x.asm" 2>&1 >/dev/null | grep -q . && bad "-w silences warnings" || ok
 "$BIN" --standard "$T/x.asm" -o "$T/s.vbin" 2>&1 | grep -q . && bad "--standard reads 0100 as decimal, silently" || ok
-od -An -tx4 -v -w4 "$T/s.vbin" | sed -n 5p | grep -q 00000064 && ok || bad "--standard: 0100 is 100"
+hex4 "$T/s.vbin" | sed -n 5p | grep -q 00000064 && ok || bad "--standard: 0100 is 100"
 "$BIN" --standard "$T/x.asm" "$T/x.asm" >/dev/null 2>&1 && bad "--standard takes a single input file" || ok
 "$BIN" --standard -v "$T/x.asm" 2>/dev/null | grep -q '^assembly successful' && ok || bad "--standard -v prints the official messages"
 printf 'hlt\n' | "$BIN" - | od -An -c | head -1 | grep -q 'V   3   2   -   V   B   I   N' && ok || bad "stdin -> binary on stdout"
@@ -160,7 +163,7 @@ mkdir -p "$T/out/k"
 printf '_f:\n  hlt\n  hlt\n' > "$T/out/k/main.asm"
 printf 'asmfile,asmline,cfile,cline,function\nmain.asm,2,a.c,33,f\nmain.asm,3,a.c,34\n' > "$T/mm.map"
 "$BIN" --cart -w -g --map "$T/mm.map" -o "$T/out/k/m.vbin" "$T/out/k/main.asm" 2>/dev/null
-[ "$(wc -l < "$T/out/k/m.vbin.debug")" = 2 ] && ok || bad "--map with a differently spelled file name"
+[ $(wc -l < "$T/out/k/m.vbin.debug") -eq 2 ] && ok || bad "--map with a differently spelled file name"
 printf 'zzz.asm,2,a.c,3\n' > "$T/nm.map"
 "$BIN" --cart -g --map "$T/nm.map" -o "$T/out/k/n.vbin" "$T/out/k/main.asm" 2>&1 | grep -q "no entry matches" && ok || bad "--map total miss warns"
 # VA-6: dependency output
@@ -182,11 +185,11 @@ for n in am al au; do "$BIN" -C -o "$T/$n.v32ob" "$T/$n.asm" 2>/dev/null; done
 "$LD" -o "$T/ar2.vbin" "$T/am.v32ob" -L "$T" -l x 2>/dev/null && cmp -s "$T/ar1.vbin" "$T/ar2.vbin" && ok || bad "-L / -l"
 "$LD" -o "$T/ar3.vbin" "$T/am.v32ob" 2>&1 | grep -q "undefined reference to \`_lib' (first used in" && ok || bad "undefined reference message"
 "$LD" -o "$T/en.vbin" --entry _lib "$T/am.v32ob" "$T/libx.a" -r "$T/en.rel" 2>/dev/null \
-  && od -An -tx4 -v -w4 "$T/en.vbin" | sed -n 4,5p | tr -d '\n ' | grep -q '^0a00000020000005' && ok || bad "--entry places a jump"
+  && hex4 "$T/en.vbin" | sed -n 4,5p | tr -d '\n ' | grep -q '^0a00000020000005' && ok || bad "--entry places a jump"
 # V32X output (v32nix): 8-word header, then the image linked at the window base
 "$LD" --v32x --data 7 --entry _lib -o "$T/x.x" "$T/am.v32ob" "$T/al.v32ob" 2>/dev/null \
-  && [ "$(od -An -tx4 -v -w4 "$T/x.x" | head -8 | tr -d ' \n')" = 5832335600000001000000080000000400000007000000030010000000000000 ] \
-  && [ "$(od -An -tx4 -v -w4 "$T/x.x" | sed -n 10p | tr -d ' ')" = 00100003 ] && ok || bad "--v32x header and addresses"
+  && [ "$(hex4 "$T/x.x" | head -8 | tr -d ' \n')" = 5832335600000001000000080000000400000007000000030010000000000000 ] \
+  && [ "$(hex4 "$T/x.x" | sed -n 10p | tr -d ' ')" = 00100003 ] && ok || bad "--v32x header and addresses"
 "$LD" --v32x -o "$T/x.x" "$T/am.v32ob" "$T/al.v32ob" 2>/dev/null && bad "--v32x without --data" || ok
 "$LD" --v32x --data 1 --entry 99 -o "$T/x.x" "$T/am.v32ob" "$T/al.v32ob" 2>/dev/null && bad "--v32x entry outside the image" || ok
 mkdir -p "$T/lib"; cp "$T/libx.a" "$T/lib/x.v32a"
@@ -240,7 +243,7 @@ fail=$((fail + $(grep -c '^FAIL' "$T/va2out")))
   "$BIN" --cart -B -o "$T/mk.vbin" bench.asm 2>/dev/null && "$BIN" --cart -B -o "$T/nomk.vbin" "$T/nomk.asm" 2>/dev/null \
     && cmp -s "$T/mk.vbin" "$T/nomk.vbin" && echo ok || echo "FAIL: ;@src changes the output"
   "$BIN" --standard --cart -B -g -o "$T/mk.vbin" bench.asm 2>/dev/null && grep -q '^0x20000000,bench.asm,2$' "$T/mk.vbin.debug" \
-    && [ "$(wc -l < "$T/mk.vbin.debug")" -gt 4 ] && echo ok || echo "FAIL: --standard ignores ;@src"
+    && [ $(wc -l < "$T/mk.vbin.debug") -gt 4 ] && echo ok || echo "FAIL: --standard ignores ;@src"
   # -C: the object stores the entries; v32asld -g writes the same file (and no invented label for a marker without function)
   "$BIN" -C -o "$T/mk.v32ob" bench.asm 2>/dev/null && "$LD" -c -g -o "$T/mko.vbin" "$T/mk.v32ob" 2>/dev/null \
     && cmp -s "$T/mko.vbin.debug" bench.debug && echo ok || echo "FAIL: -C then v32asld -g with ;@src"
@@ -382,8 +385,8 @@ pass=$((pass + $(grep -c '^ok' "$T/langout")))
 fail=$((fail + $(grep -c '^FAIL' "$T/langout")))
 # file-local labels: their names are kept only for -g and --symbols; the output is the same either way (golden from before that change)
 ( cd locals
-  "$BIN" --cart -B -o "$T/l.vbin" many.asm 2>/dev/null && od -An -tx4 -v -w4 "$T/l.vbin" | cmp -s - many.hex && echo ok || echo "FAIL: locals without -g"
-  "$BIN" --cart -B -g -o "$T/lg.vbin" many.asm 2>/dev/null && od -An -tx4 -v -w4 "$T/lg.vbin" | cmp -s - many.hex && echo ok || echo "FAIL: locals -g (vbin)"
+  "$BIN" --cart -B -o "$T/l.vbin" many.asm 2>/dev/null && hex4 "$T/l.vbin" | cmp -s - many.hex && echo ok || echo "FAIL: locals without -g"
+  "$BIN" --cart -B -g -o "$T/lg.vbin" many.asm 2>/dev/null && hex4 "$T/lg.vbin" | cmp -s - many.hex && echo ok || echo "FAIL: locals -g (vbin)"
   cmp -s "$T/lg.vbin.sym" many.sym && echo ok || echo "FAIL: locals -g (.sym)"
   cmp -s "$T/lg.vbin.debug" many.debug && echo ok || echo "FAIL: locals -g (.debug)"
   "$BIN" --cart -B --symbols "$T/ls.sym" -o "$T/l2.vbin" many.asm 2>/dev/null && cmp -s "$T/ls.sym" many_nolocal.sym && cmp -s "$T/l2.vbin" "$T/l.vbin" && echo ok || echo "FAIL: locals --symbols"
@@ -426,7 +429,7 @@ fail=$((fail + $(grep -c '^FAIL' "$T/locout")))
   "$BIN" --standard "$T/pv.asm" -o "$T/pv.vbin" >/dev/null 2>&1; [ $? -eq 1 ] && echo ok || echo "FAIL: --standard port value in mov"
   "$BIN" "$T/pv.asm" -o "$T/pv.vbin" 2>/dev/null && echo ok || echo "FAIL: extended mode keeps port values as numbers"
   # without -i, a pipe on STDIN is still assembled to STDOUT
-  printf 'mov R0, 1\n' | "$BIN" | od -An -tx1 | head -1 | grep -q '56 33 32 2d 56 42 49 4e' && echo ok || echo "FAIL: STDIN to STDOUT without -i"
+  printf 'mov R0, 1\n' | "$BIN" | hex4 | head -2 | tr -d ' \n' | grep -q '^2d3233564e494256$' && echo ok || echo "FAIL: STDIN to STDOUT without -i"
 ) > "$T/replout" 2>&1
 grep '^FAIL' "$T/replout"
 pass=$((pass + $(grep -c '^ok' "$T/replout")))

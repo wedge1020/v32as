@@ -36,6 +36,8 @@ README's "History and compatibility" section and the preprocessor phases 1 to 3 
   `.github/workflows/tests.yml` (the suite on every push: gcc, clang without readline, ASan/UBSan; macOS build), and
   `scripts/smoke_test.sh` (versions, `%include <...>` from the package layout, `-C` + link, `-i`). `.gitignore` no longer
   hides the tests' golden `.hex`, `.map` and `.out` files.
+- **Tests run on macOS/BSD**: `tests/run_tests.sh` no longer needs GNU `od -w` (a `hex4` helper over plain `od`, in the
+  goldens' format) or GNU `wc` spacing; `tests.yml` runs the suite on macOS too.
 - **Documentation**: `docs/USAGE.md` (a task-oriented guide), README quick start and "How it differs from the official
   assembler", the library search path and the `--standard` details documented, man pages updated for `-i`.
 

@@ -1,8 +1,8 @@
 name: Tests
 
 # The regression suite on every push and pull request: a plain build, a
-# build without readline, and an AddressSanitizer/UBSan build on Linux
-# (the suite needs GNU od), plus a build-only check with clang on macOS.
+# build without readline, and an AddressSanitizer/UBSan build on Linux,
+# and a clang build on macOS (BSD userland: od, sed, wc).
 # Release packages are made by release-builds.yml, started by hand.
 
 on:
@@ -60,5 +60,7 @@ jobs:
           echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
       - name: Build
         run: make -j"$(sysctl -n hw.ncpu)" CC=clang
+      - name: Test
+        run: make test CC=clang
       - name: Smoke Test (package layout)
         run: sh scripts/smoke_test.sh bin lib

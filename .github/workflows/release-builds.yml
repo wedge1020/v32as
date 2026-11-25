@@ -89,8 +89,9 @@ jobs:
   # are not committed. Generate them once, here, where flex and a bison >= 3
   # are a package away, and hand them to every build job: the Windows and VM
   # environments would need extra packages, and macOS's own bison (2.3) is
-  # too old for parser.y. This job also runs the full regression suite,
-  # which needs GNU od and friends, so it is the Linux runner's to do.
+  # too old for parser.y. This job also runs the full regression suite
+  # once, before anything is built for release (tests.yml runs it on
+  # macOS too).
   generate:
     name: Generate Parser and Lexer, Run Tests
     needs: version
