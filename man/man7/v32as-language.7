@@ -63,6 +63,14 @@ I/O port names (for example
 and the port value names (for example
 .BR GPUCommand_ClearScreen )
 are written as in the official assembler.
+A port in
+.B in
+and
+.B out
+may also be given as a number
+.RB ( "out 0x200, R0" ),
+as in the official assembler; a number that is not a known port assembles with
+a warning.
 .PP
 The internal registers IP, IR and IV can be used with
 .BR MOV ,
