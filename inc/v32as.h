@@ -15,7 +15,7 @@
 #include "pp.h"
 #include "heapstat.h"
 
-#define  VERSION            "20261125-release"
+#define  VERSION            "20261125-dev"
 
 #define  BIOS_BASE          0x10000000u
 #define  CART_BASE          0x20000000u
