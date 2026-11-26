@@ -7,6 +7,9 @@ README's "History and compatibility" section and the preprocessor phases 1 to 3 
 
 ## 20261126-dev: release preparation
 
+- **Fix, `--standard`**: `-2147483648` (INT_MIN) is accepted again. The official assembler reads a decimal literal with `stoi`,
+  sign included, so a `-` written right before the digits allows `2147483648`. Without the `-`, or with a space after it,
+  the number is still out of range. The default mode was not affected. Tests: `tests/std/int_min*`, `tests/std/int_max_plus1`.
 - **Version**: `20261126-dev` in `inc/v32as.h` and `src/ld.c`. `make version` reads it from `inc/v32as.h` and stamps it everywhere else; `make version VERSION=YYYYMMDD-status`
   (`V=` still works) rewrites both and stamps the `.TH` line of every man page, including the Spanish and French ones in
   `man/es/man1` and `man/fr/man1` (their dates in the language's own form). `VDATE=YYYY-MM-DD` sets the date of the pages.

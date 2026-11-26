@@ -291,6 +291,8 @@ typedef struct asm_ctx
     size_t       stmt_fix;          // fixup count at statement start
     int          lex_line;          // lexer bookkeeping
     int          lex_col;
+    int          lex_minus_line;    // where the last '-' token ended (line, column just after it):
+    int          lex_minus_col;     // lets --standard take -2147483648 as one literal, as stoi does
 
     // preprocessor line map for the text being parsed (NULL: lines are the source's own)
     const srcloc_t  *map;

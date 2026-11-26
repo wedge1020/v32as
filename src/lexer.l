@@ -58,9 +58,14 @@ static int  lex_number (asm_t *a, const loc_t *loc, YYSTYPE *lv, const char *dig
     errno = 0;
     value = strtoull (digits, NULL, base);
 
-    // the official tool reads decimal with stoi: above INT_MAX is an error
+    // the official tool reads decimal with stoi, the sign included: above INT_MAX is an
+    // error, but a '-' right before the digits makes 2147483648 (INT_MIN) legal
+    int  neg_adjacent = (loc -> first_line == a -> lex_minus_line
+                         && loc -> first_column == a -> lex_minus_col);
+    uint64_t  dec_max = neg_adjacent ? 0x80000000ull : 0x7FFFFFFFull;
+
     if (errno != 0 || value > 0xFFFFFFFFull
-        || (a -> standard && base == 10 && value > 0x7FFFFFFFull))
+        || (a -> standard && base == 10 && value > dec_max))
     {
         return (lex_fail (a, loc, "number out of range for a 32-bit value"));
     }
@@ -130,7 +135,11 @@ IDENT       [A-Za-z_][A-Za-z0-9_]*
 "["                     { return (T_LBRACK); }
 "]"                     { return (T_RBRACK); }
 "+"                     { return (T_PLUS);   }
-"-"                     { return (T_MINUS);  }
+"-"                     {
+                            yyextra -> lex_minus_line = yyextra -> lex_line;
+                            yyextra -> lex_minus_col  = yyextra -> lex_col;
+                            return (T_MINUS);
+                        }
 
  /* ------------------------------ numbers ------------------------------ */
 

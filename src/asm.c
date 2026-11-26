@@ -2466,6 +2466,7 @@ static int  parse_common_buf (asm_t *a, const char *name, char *buf, size_t n, c
 
     a -> cur_file    = name;
     a -> lex_line    = first_line;
+    a -> lex_minus_line = 0;
     a -> lex_col     = 1;
     a -> lex_error   = 0;
     a -> stmt_bad    = 0;
@@ -2509,6 +2510,7 @@ void  asm_stream_begin (asm_t *a, const char *name, size_t est_chars)
 
     a -> cur_file    = name;
     a -> lex_line    = 1;
+    a -> lex_minus_line = 0;
     a -> lex_col     = 1;
     a -> lex_error   = 0;
     a -> stmt_bad    = 0;
