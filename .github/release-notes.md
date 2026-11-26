@@ -1,6 +1,6 @@
 **v32as** is an alternate, drop-in assembler for [Vircon32](https://www.vircon32.com), written in C, with a linker (`v32asld`) beside it. Give it the same source as the official `assemble` and it writes the same bytes; `v32as game.asm` writes `game.vbin` exactly as `assemble game.asm` does. Everything else is an addition you can use or ignore, and `--standard` switches all of it off.
 
-This is the first public release.
+This is a development release (`@VERSION@`) after the first public release: it adds Spanish and French documentation and makes the build, install and release tooling consistent. See `CHANGES.md` for the full history.
 
 ## How it differs from the official assembler
 
@@ -28,7 +28,7 @@ Each zip unpacks straight into your `v32tools` folder (`/usr/local/Vircon32/v32t
 
 - `v32as` and `v32asld`;
 - the macro libraries in `include/v32as/`, which v32as finds by itself;
-- the README, the usage guide and the manual pages in `docs/v32as/`.
+- the README, the usage guide and the manual pages in `docs/v32as/`, in English, Spanish (`*.es.md`, `man/es/`) and French (`*.fr.md`, `man/fr/`).
 
 Check a download against `SHA256SUMS.txt`. To pack cartridges you also need the official Vircon32 DevTools (`packrom`, `png2vircon`, `wav2vircon`).
 

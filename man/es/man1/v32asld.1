@@ -1,0 +1,367 @@
+'\" -*- coding: UTF-8 -*-
+.TH V32ASLD 1 "26 de noviembre de 2026" "v32asld 20261126-dev" "Manual del ensamblador de Vircon32"
+.SH NOMBRE
+v32asld \- enlazador y archivador de objetos reubicables de v32as
+.SH SINOPSIS
+.B v32asld
+.RI [ opciones ]
+.IR OBJETO ...
+.br
+.B v32asld \-A
+.I BIBLIOTECA
+.IR OBJETO ...
+.br
+.B v32asld \-R
+.RB [ \-o
+.IR ARCHIVO ]
+.IR OBJETO ...
+.br
+.B v32asld \-\-v32x \-\-data
+.I PALABRAS
+.RI [ opciones ]
+.IR OBJETO ...
+.SH DESCRIPCIÓN
+.B v32asld
+enlaza en un archivo VBIN los objetos reubicables hechos por
+.B v32as \-C
+(véase
+.BR v32as (1)).
+Enlazar equivale exactamente a ensamblar los fuentes de los objetos uno tras
+otro como un único archivo en la dirección base elegida; el conjunto de
+pruebas lo comprueba byte a byte.
+.PP
+Los objetos se colocan en el orden de la línea de comandos, y la primera
+palabra del primer objeto es el punto de entrada (véase
+.BR \-\-entry ).
+Los símbolos declarados
+.B global
+en un objeto satisfacen las referencias
+.B extern
+de los demás.
+Una etiqueta que no es ninguna de las dos es local a su objeto, de modo que
+dos objetos pueden usar el mismo nombre local.
+Los objetos llevan los registros de depuración del ensamblador, de modo que
+.B \-g
+escribe el mismo archivo
+.I .debug
+que escribe
+.B v32as \-g
+para los fuentes unidos.
+.PP
+Los archivos de biblioteca (archivos que empiezan con el número mágico
+.BR V32\-VARC ,
+hechos con
+.BR \-A )
+pueden nombrarse como operandos o encontrarse con
+.BR \-l .
+Se leen después de todos los objetos simples: un miembro se enlaza (se añade al final, en el
+orden en que se encuentra) solo cuando define un símbolo global que algún objeto seleccionado
+aún no tiene, y la exploración se repite hasta que no se incorpora nada más.
+.PP
+Los formatos de objeto y de archivo de biblioteca se describen en
+.I docs/OBJECT.md
+en la distribución del código fuente.
+.SH OPCIONES
+.TP
+.BR \-o ", " \-\-output =\fIARCHIVO\fP
+Archivo de salida.
+Por defecto es
+.I a.vbin
+(o
+.I a.v32ob
+con
+.BR \-R ).
+.TP
+.BR \-b ", " \-\-bios
+Enlaza para la BIOS: las direcciones empiezan en 0x10000000.
+.TP
+.BR \-c ", " \-\-cart
+Enlaza para un cartucho: las direcciones empiezan en 0x20000000.
+Es el valor por defecto.
+.TP
+.BR \-O ", " \-\-origin " \fIDIR\fP"
+Enlaza para cualquier dirección base.
+.I DIR
+se lee como un entero de C y debe caber en 32 bits.
+.BR \-b ", " \-c " y " \-O
+son mutuamente excluyentes.
+.TP
+.BR \-g ", " \-\-debug [= \fIMODO\fP]
+Escribe además
+.IR SALIDA .debug
+como lo hace
+.BR "v32as \-g" .
+.I MODO
+es
+.B program
+(el valor por defecto; direcciones de palabra absolutas),
+.B vbin
+o
+.B v32
+(desplazamientos en bytes en un archivo .vbin o .v32); también puede darse como la palabra siguiente.
+Las etiquetas escritas son todas las etiquetas de todos los objetos, locales o globales; las líneas
+son las de los fuentes (o las líneas de C, cuando un objeto se hizo con
+.BR "v32as \-C \-\-map" ).
+También se escribe
+.IR SALIDA .sym
+(funciones y etiquetas de datos con direcciones finales y tamaños, como lo escribe
+.BR "v32as \-g" ,
+sin las variables).
+Si un objeto tiene registros
+.BR ;@var ,
+también se escribe
+.IR SALIDA .vars ,
+como lo haría
+.B v32as \-g
+para el código fuente unido: un
+.B ;@var
+cuyo
+.B loc=
+es una etiqueta o
+.B label+N
+se escribe como
+.BI @0x DIRECCIÓN
+con la dirección final de la etiqueta, al estilo del modo de
+.BR \-g .
+Si los objetos se hicieron a partir de un código fuente con
+.B ;@lang X
+(se usa el primero que se encuentra), ambos archivos empiezan con la línea de comentario
+.BR "# lang X" ;
+los lectores deben saltarse las líneas que empiezan por
+.BR # .
+.TP
+.BI \-\-symbols= ARCHIVO
+Escribe
+.I 0xADDRESS,name,kind
+para cada etiqueta de cada objeto, ordenado por dirección.
+.I kind
+es
+.B F
+(sigue código) o
+.B D
+(datos).
+Las etiquetas locales aparecen con el nombre que les dio el ensamblador (por ejemplo
+.BR _f__loop ).
+.TP
+.BR \-r ", " \-\-relocs =\fIARCHIVO\fP , " \-\-emit\-relocs=" \fIARCHIVO\fP
+Escribe
+.I index,0xVALUE[,kind]
+para cada palabra que contiene una dirección, en el formato de
+.BR "v32as \-r" :
+el índice de palabra basado en cero dentro de la imagen (sin contar la cabecera VBIN de
+3 palabras), el valor tal como se enlazó y, cuando algún objeto declara un
+.BR datasym ,
+el tipo
+.B C
+(dirección de código) o
+.B D
+(dirección de datos) en cada línea.
+.TP
+.BI \-\-entry= SÍMBOLO
+El programa empieza en la etiqueta global
+.IR SÍMBOLO .
+Salvo que sea la primera palabra del primer objeto, se coloca delante de todo un
+.B jmp SÍMBOLO
+de dos palabras (aparece en el archivo de
+.BR \-r ).
+Es un error si ningún objeto define
+.IR SÍMBOLO .
+.TP
+.B \-\-v32x
+Escribe un ejecutable V32X para v32nix en lugar de un VBIN: una cabecera de 8 palabras
+(0x58323356, versión 1, 8, palabras de texto, palabras de datos, desplazamiento de entrada, origen, 0)
+seguida de la imagen, que es lo mismo que hace
+.BR "v32as \-\-origin" .
+Necesita
+.BR \-\-data .
+La base por defecto es 0x100000 (la base de la ventana de v32nix) y es el origen
+registrado en la cabecera;
+.B \-O
+la cambia, y
+.BR \-b ,
+.B \-c
+y
+.B "\-g vbin"
+o
+.B "\-g v32"
+se rechazan.
+Con
+.BR \-\-v32x ,
+.B \-\-entry
+es una etiqueta global o un desplazamiento de palabra dentro de la imagen (por defecto 0) que va a la
+cabecera; no se añade ningún salto, y debe quedar dentro de la imagen.
+.TP
+.BI \-\-data= PALABRAS
+Con
+.BR \-\-v32x :
+el número de palabras de variables globales puestas a cero tras la imagen.
+Es un error sin
+.BR \-\-v32x ,
+y
+.B \-\-v32x
+lo necesita.
+.TP
+.BI \-L " DIR"
+Añade
+.I DIR
+a los directorios en los que busca
+.BR \-l .
+Puede repetirse.
+.TP
+.BI \-l " NOMBRE"
+Lee el archivo de biblioteca
+.IR DIR /\fINOMBRE\fP.v32a
+o si no
+.IR DIR /lib\fINOMBRE\fP.a
+del primero de los directorios
+.B \-L
+que tenga uno; el directorio actual se busca siempre en último lugar.
+.TP
+.BR \-A ", " \-\-archive =\fIARCHIVO\fP
+No enlaza: crea un archivo de biblioteca
+.I ARCHIVO
+(formato
+.BR V32\-VARC )
+con los objetos dados.
+.TP
+.BR \-R ", " \-\-relocatable
+Enlazado parcial: no enlaza, sino que une los objetos en un solo objeto
+(salida por defecto
+.IR a.v32ob ).
+Los globales siguen siendo globales, un
+.B extern
+que define otra entrada pasa a ser una referencia a la definición, y los demás
+siguen siendo
+.BR extern ;
+se conservan las reubicaciones, los datasyms y los registros de depuración, de modo que enlazar el resultado
+es lo mismo que enlazar las entradas.
+Los archivos de biblioteca y
+.B \-l
+funcionan como en un enlazado completo.
+No se puede combinar con
+.BR \-b ,
+.BR \-c ,
+.BR \-O ,
+.BR \-g ,
+.BR \-r ,
+.BR \-\-symbols ,
+.B \-\-entry
+ni
+.BR \-\-v32x .
+Obsérvese que
+.B \-r
+es la lista de reubicaciones, no un enlazado reubicable.
+.TP
+.BR \-w ", " \-\-no\-warnings
+No advierte de una declaración
+.B extern
+que ningún código usa.
+.TP
+.BR \-h ", " \-\-help
+Imprime el texto de uso y termina.
+.TP
+.BR \-V ", " \-\-version
+Imprime la versión y termina.
+.SH "ESTADO DE SALIDA"
+.TP
+.B 0
+Éxito.
+.TP
+.B 1
+Un error de enlazado: un símbolo sin definir (informado una vez por símbolo, como
+.B "undefined reference to `x' (first used in a.v32ob)" ),
+un global definido por dos objetos, un símbolo de entrada que no está definido o que queda
+fuera de la imagen.
+.TP
+.B 2
+Un error de uso, un objeto o archivo de biblioteca ilegible o corrupto (que no es un objeto de v32as,
+truncado, o con una versión de formato no admitida), una biblioteca
+.B \-l
+ausente, o un archivo de salida que no se puede escribir.
+.SH ENTORNO
+.B v32asld
+no lee ninguna variable de entorno.
+.SH ARCHIVOS
+.TP
+.I a.vbin
+Salida enlazada por defecto.
+.TP
+.I a.v32ob
+Salida por defecto de
+.BR \-R .
+.TP
+.IR NOMBRE .v32a ", " libNOMBRE .a
+Archivos de biblioteca que busca
+.BR \-l .
+.SH EJEMPLOS
+Dos fuentes, ensamblados por separado y enlazados:
+.PP
+.nf
+.RS
+v32as \-C a.asm
+v32as \-C b.asm \-o b.v32ob
+v32asld \-g \-r prog.rel \-\-symbols prog.sym \-o prog.vbin a.v32ob b.v32ob
+.RE
+.fi
+.PP
+Aquí
+.I a.asm
+tiene
+.B global _start
+y
+.BR "extern _helper" ,
+y
+.I b.asm
+tiene
+.BR "global _helper" .
+El resultado es idéntico a ensamblar los dos fuentes unidos en uno.
+.PP
+Crear un archivo de biblioteca y enlazar contra él, por nombre y con
+.BR \-l :
+.PP
+.nf
+.RS
+v32asld \-A libb.a b.v32ob
+v32asld \-o prog.vbin a.v32ob libb.a
+v32asld \-o prog.vbin \-L libs \-l b a.v32ob
+.RE
+.fi
+.PP
+Empezar en una etiqueta que no es la primera palabra (se coloca delante un
+.BR jmp ):
+.PP
+.nf
+.RS
+v32asld \-\-entry _helper \-o prog.vbin a.v32ob b.v32ob
+.RE
+.fi
+.PP
+Unir dos objetos en uno y luego enlazarlo:
+.PP
+.nf
+.RS
+v32asld \-R \-o ab.v32ob a.v32ob b.v32ob
+v32asld \-o prog.vbin ab.v32ob
+.RE
+.fi
+.PP
+Un ejecutable V32X con 4 palabras de datos a cero, que empieza en
+.BR _helper :
+.PP
+.nf
+.RS
+v32asld \-\-v32x \-\-data 4 \-\-entry _helper \-o prog.v32x a.v32ob b.v32ob
+.RE
+.fi
+.SH DIAGNÓSTICOS
+Los mensajes empiezan por
+.BR v32asld: .
+Además de los errores anteriores, se da una advertencia por una declaración
+.B extern
+que nunca se usa (se silencia con
+.BR \-w ).
+.SH "VÉASE TAMBIÉN"
+.BR v32as (1),
+.BR v32as\-language (7)
+.PP
+docs/OBJECT.md en la distribución del código fuente describe los formatos de objeto y de archivo de biblioteca.

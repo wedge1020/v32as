@@ -65,13 +65,13 @@ jobs:
           STALE=0
           LD_VERSION=$(sed -n 's/^#define[[:space:]]*VERSION[[:space:]]*"\(.*\)".*/\1/p' src/ld.c | head -n 1)
           if [ "$LD_VERSION" != "$VERSION" ]; then
-            echo "::$LEVEL file=src/ld.c::src/ld.c says $LD_VERSION, inc/v32as.h says $VERSION (run 'make version V=$VERSION')"
+            echo "::$LEVEL file=src/ld.c::src/ld.c says $LD_VERSION, inc/v32as.h says $VERSION (run 'make version VERSION=$VERSION')"
             STALE=1
           fi
-          for page in man/man*/*.[137]; do
+          for page in man/man*/*.[137] man/es/man1/*.1 man/fr/man1/*.1; do
             [ -f "$page" ] || continue
-            if ! head -n 1 "$page" | grep -q "^\.TH .*\"v32as[a-z]* $VERSION\""; then
-              echo "::$LEVEL file=$page::$page is not stamped with $VERSION (run 'make version V=$VERSION')"
+            if ! grep -q "^\.TH .*\"v32as[a-z]* $VERSION\"" "$page"; then
+              echo "::$LEVEL file=$page::$page is not stamped with $VERSION (run 'make version VERSION=$VERSION')"
               STALE=1
             fi
           done
@@ -334,9 +334,13 @@ jobs:
       #     v32as[.exe], v32asld[.exe]
       #     include/v32as/*.inc      the %include library: v32as finds it
       #                              here, next to itself
-      #     docs/v32as/README.md     with CHANGES.md, LICENSE, docs/*.md
+      #     docs/v32as/README.md     with README.es.md, README.fr.md, CHANGES.md,
+      #                              LICENSE and docs/*.md (USAGE.md and its
+      #                              es/fr translations)
       #     docs/v32as/man/man?/*    and the manual pages beside it, so
-      #                              its links work (MANPATH=docs/v32as/man)
+      #                              its links work (MANPATH=docs/v32as/man);
+      #                              the Spanish and French man1 pages are in
+      #                              docs/v32as/man/es/man1 and man/fr/man1
       # (Default shell: MSYS2's bash on Windows, which has the zip package
       # installed above; Git Bash, the runner's own "bash", has no zip.)
       - name: Create Zip Archive
@@ -356,9 +360,15 @@ jobs:
           mkdir -p "$PKG/include/${{ env.PROJECT_NAME }}" "$DOCS/docs"
           cp bin/* "$PKG/"
           cp lib/*.inc "$PKG/include/${{ env.PROJECT_NAME }}/"
-          cp README.md CHANGES.md LICENSE "$DOCS/"
+          cp README*.md CHANGES.md LICENSE "$DOCS/"
           cp docs/*.md "$DOCS/docs/"
           cp -R man "$DOCS/"
+
+          # the Spanish and French documents are expected; say so if one is missing
+          for f in README.es.md README.fr.md docs/USAGE.es.md docs/USAGE.fr.md \
+                   man/es/man1/v32as.1 man/es/man1/v32asld.1 man/fr/man1/v32as.1 man/fr/man1/v32asld.1; do
+            [ -f "$f" ] || echo "::warning::$f is missing from the package"
+          done
 
           ls "$PKG/include/${{ env.PROJECT_NAME }}"/*.inc >/dev/null 2>&1 || {
             echo "::error::no %include library files were packaged"; exit 1; }

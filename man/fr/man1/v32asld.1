@@ -1,0 +1,377 @@
+'\" -*- coding: UTF-8 -*-
+.TH V32ASLD 1 "26 novembre 2026" "v32asld 20261126-dev" "Manuel de l'assembleur Vircon32"
+.SH NOM
+v32asld \- éditeur de liens et archiveur pour les objets relogeables de v32as
+.SH SYNOPSIS
+.B v32asld
+.RI [ options ]
+.IR OBJET ...
+.br
+.B v32asld \-A
+.I ARCHIVE
+.IR OBJET ...
+.br
+.B v32asld \-R
+.RB [ \-o
+.IR FICHIER ]
+.IR OBJET ...
+.br
+.B v32asld \-\-v32x \-\-data
+.I MOTS
+.RI [ options ]
+.IR OBJET ...
+.SH DESCRIPTION
+.B v32asld
+lie les objets relogeables produits par
+.B v32as \-C
+(voir
+.BR v32as (1))
+en un fichier VBIN.
+L'édition de liens équivaut exactement à assembler les sources des objets les
+unes après les autres comme un seul fichier à l'adresse de base choisie ; la
+suite de tests le vérifie octet pour octet.
+.PP
+Les objets sont placés dans l'ordre de la ligne de commande, et le premier mot
+du premier objet est le point d'entrée (voir
+.BR \-\-entry ).
+Les symboles déclarés
+.B global
+dans un objet satisfont les références
+.B extern
+des autres.
+Une étiquette qui n'est ni l'un ni l'autre est locale à son objet, de sorte que
+deux objets peuvent utiliser le même nom local.
+Les objets portent les enregistrements de débogage de l'assembleur, de sorte que
+.B \-g
+écrit le même fichier
+.I .debug
+que celui que
+.B v32as \-g
+écrit pour les sources jointes.
+.PP
+Les archives (fichiers commençant par le nombre magique
+.BR V32\-VARC ,
+faites avec
+.BR \-A )
+peuvent être nommées comme opérandes ou trouvées avec
+.BR \-l .
+Elles sont lues après tous les objets simples : un membre est lié (ajouté, dans
+l'ordre où il est trouvé) seulement lorsqu'il définit un symbole global qui
+manque encore à un objet sélectionné, et l'examen se répète jusqu'à ce que plus
+rien ne soit ajouté.
+.PP
+Les formats d'objet et d'archive sont décrits dans
+.I docs/OBJECT.md
+dans la distribution des sources.
+.SH OPTIONS
+.TP
+.BR \-o ", " \-\-output =\fIFICHIER\fP
+Fichier de sortie.
+Par défaut, c'est
+.I a.vbin
+(ou
+.I a.v32ob
+avec
+.BR \-R ).
+.TP
+.BR \-b ", " \-\-bios
+Lie pour le BIOS : les adresses commencent à 0x10000000.
+.TP
+.BR \-c ", " \-\-cart
+Lie pour une cartouche : les adresses commencent à 0x20000000.
+C'est la valeur par défaut.
+.TP
+.BR \-O ", " \-\-origin " \fIADDR\fP"
+Lie pour n'importe quelle adresse de base.
+.I ADDR
+est lue comme un entier C et doit tenir sur 32 bits.
+.BR \-b ", " \-c " et " \-O
+sont mutuellement exclusifs.
+.TP
+.BR \-g ", " \-\-debug [= \fIMODE\fP]
+Écrit aussi
+.IR SORTIE .debug
+comme le fait
+.B v32as \-g .
+.I MODE
+est
+.B program
+(la valeur par défaut ; adresses de mots absolues),
+.B vbin
+ou
+.B v32
+(décalages en octets dans un fichier .vbin ou .v32) ; il peut aussi être donné
+comme mot suivant.
+Les étiquettes écrites sont toutes les étiquettes de tous les objets, locales ou
+globales ; les lignes sont celles des sources (ou les lignes C, lorsqu'un objet
+a été fait avec
+.BR "v32as \-C \-\-map" ).
+.IR SORTIE .sym
+est écrit aussi (les fonctions et les étiquettes de données avec leurs adresses
+finales et leurs tailles, tel que
+.B v32as \-g
+l'écrit, sans les variables).
+Si un objet contient des enregistrements
+.BR ;@var ,
+.IR SORTIE .vars
+est écrit également, comme le ferait
+.B v32as \-g
+pour la source jointe : un
+.B ;@var
+dont le
+.B loc=
+est une étiquette ou
+.B label+N
+est écrit sous la forme
+.BI @0x ADRESSE
+avec l'adresse finale de l'étiquette, dans le style du mode
+.B \-g .
+Si les objets ont été faits à partir d'une source avec
+.B ;@lang X
+(le premier trouvé est utilisé), les deux fichiers commencent par la ligne de
+commentaire
+.BR "# lang X" ;
+les lecteurs doivent ignorer les lignes qui commencent par
+.BR # .
+.TP
+.BI \-\-symbols= FICHIER
+Écrit
+.I 0xADRESSE,nom,genre
+pour chaque étiquette de chaque objet, triées par adresse.
+.I genre
+est
+.B F
+(du code suit) ou
+.B D
+(des données).
+Les étiquettes locales apparaissent sous le nom que l'assembleur leur a donné
+(par exemple
+.BR _f__loop ).
+.TP
+.BR \-r ", " \-\-relocs =\fIFICHIER\fP , " \-\-emit\-relocs=" \fIFICHIER\fP
+Écrit
+.I index,0xVALEUR[,genre]
+pour chaque mot qui contient une adresse, au format de
+.BR "v32as \-r" :
+l'indice de mot à partir de zéro dans l'image (sans compter l'en\-tête VBIN de 3
+mots), la valeur telle que liée et, lorsqu'un objet déclare un
+.BR datasym ,
+le genre
+.B C
+(adresse de code) ou
+.B D
+(adresse de données) sur chaque ligne.
+.TP
+.BI \-\-entry= SYMBOLE
+Le programme démarre à l'étiquette globale
+.IR SYMBOLE .
+Sauf s'il s'agit du premier mot du premier objet, un
+.B jmp SYMBOLE
+de deux mots est placé devant tout le reste (il apparaît dans le fichier
+.BR \-r ).
+C'est une erreur si aucun objet ne définit
+.IR SYMBOLE .
+.TP
+.B \-\-v32x
+Écrit un exécutable V32X pour v32nix au lieu d'un VBIN : un en\-tête de 8 mots
+(0x58323356, version 1, 8, mots de texte, mots de données, décalage d'entrée,
+origine, 0) suivi de l'image, qui est la même que celle que produit
+.B v32as \-\-origin .
+Nécessite
+.BR \-\-data .
+La base vaut par défaut 0x100000 (la base de la fenêtre de v32nix) et est
+l'origine enregistrée dans l'en\-tête ;
+.B \-O
+la change, et
+.BR \-b ,
+.B \-c
+et
+.B "\-g vbin"
+ou
+.B "\-g v32"
+sont refusés.
+Avec
+.B \-\-v32x ,
+.B \-\-entry
+est une étiquette globale ou un décalage en mots dans l'image (0 par défaut) qui
+va dans l'en\-tête ; aucun saut n'est ajouté, et il doit se trouver à
+l'intérieur de l'image.
+.TP
+.BI \-\-data= MOTS
+Avec
+.BR \-\-v32x  :
+le nombre de mots de variables globales mis à zéro derrière l'image.
+C'est une erreur sans
+.BR \-\-v32x ,
+et
+.B \-\-v32x
+en a besoin.
+.TP
+.BI \-L " RÉP"
+Ajoute
+.I RÉP
+aux répertoires parcourus par
+.BR \-l .
+Peut être répété.
+.TP
+.BI \-l " NOM"
+Lit l'archive
+.IR RÉP /\fINOM\fP.v32a
+ou sinon
+.IR RÉP /lib\fINOM\fP.a
+dans le premier des répertoires
+.B \-L
+qui en possède une ; le répertoire courant est toujours parcouru en dernier.
+.TP
+.BR \-A ", " \-\-archive =\fIFICHIER\fP
+Ne lie pas : fabrique une archive
+.I FICHIER
+(format
+.BR V32\-VARC )
+des objets donnés.
+.TP
+.BR \-R ", " \-\-relocatable
+Édition de liens partielle : ne lie pas, mais joint les objets en un seul objet
+(sortie par défaut
+.IR a.v32ob ).
+Les globales restent globales, un
+.B extern
+qu'une autre entrée définit devient une référence à la définition, et les
+autres restent
+.BR extern  ;
+les relocalisations, les datasyms et les enregistrements de débogage sont
+conservés, de sorte que lier le résultat revient à lier les entrées.
+Les archives et
+.B \-l
+fonctionnent comme dans une édition de liens complète.
+Ne peut pas être combiné avec
+.BR \-b ,
+.BR \-c ,
+.BR \-O ,
+.BR \-g ,
+.BR \-r ,
+.BR \-\-symbols ,
+.B \-\-entry
+ou
+.BR \-\-v32x .
+Notez que
+.B \-r
+est la liste de relocalisations, et non une édition de liens relogeable.
+.TP
+.BR \-w ", " \-\-no\-warnings
+N'avertit pas d'une déclaration
+.B extern
+qu'aucun code n'utilise.
+.TP
+.BR \-h ", " \-\-help
+Affiche le texte d'utilisation et se termine.
+.TP
+.BR \-V ", " \-\-version
+Affiche la version et se termine.
+.SH "CODE DE RETOUR"
+.TP
+.B 0
+Succès.
+.TP
+.B 1
+Une erreur d'édition de liens : un symbole indéfini (signalé une fois par
+symbole, sous la forme
+.B "undefined reference to `x' (first used in a.v32ob)" ),
+une globale définie par deux objets, un symbole d'entrée qui n'est pas défini ou
+qui se trouve hors de l'image.
+.TP
+.B 2
+Une erreur d'utilisation, un objet ou une archive illisible ou corrompu (pas un
+objet v32as, tronqué, ou d'une version de format non prise en charge), une
+bibliothèque
+.B \-l
+introuvable, ou un fichier de sortie qui ne peut pas être écrit.
+.SH ENVIRONNEMENT
+.B v32asld
+ne lit aucune variable d'environnement.
+.SH FICHIERS
+.TP
+.I a.vbin
+Sortie liée par défaut.
+.TP
+.I a.v32ob
+Sortie par défaut de
+.BR \-R .
+.TP
+.IR NOM .v32a ", " libNOM .a
+Archives recherchées par
+.BR \-l .
+.SH EXEMPLES
+Deux sources, assemblées séparément puis liées :
+.PP
+.nf
+.RS
+v32as \-C a.asm
+v32as \-C b.asm \-o b.v32ob
+v32asld \-g \-r prog.rel \-\-symbols prog.sym \-o prog.vbin a.v32ob b.v32ob
+.RE
+.fi
+.PP
+Ici
+.I a.asm
+contient
+.B global _start
+et
+.BR "extern _helper" ,
+et
+.I b.asm
+contient
+.BR "global _helper" .
+Le résultat est identique à l'assemblage des deux sources jointes en une seule.
+.PP
+Fabriquer une archive et lier contre elle, par nom et avec
+.BR \-l  :
+.PP
+.nf
+.RS
+v32asld \-A libb.a b.v32ob
+v32asld \-o prog.vbin a.v32ob libb.a
+v32asld \-o prog.vbin \-L libs \-l b a.v32ob
+.RE
+.fi
+.PP
+Démarrer à une étiquette qui n'est pas le premier mot (un
+.B jmp
+est placé devant) :
+.PP
+.nf
+.RS
+v32asld \-\-entry _helper \-o prog.vbin a.v32ob b.v32ob
+.RE
+.fi
+.PP
+Joindre deux objets en un seul, puis le lier :
+.PP
+.nf
+.RS
+v32asld \-R \-o ab.v32ob a.v32ob b.v32ob
+v32asld \-o prog.vbin ab.v32ob
+.RE
+.fi
+.PP
+Un exécutable V32X avec 4 mots de données mis à zéro, démarrant à
+.BR _helper  :
+.PP
+.nf
+.RS
+v32asld \-\-v32x \-\-data 4 \-\-entry _helper \-o prog.v32x a.v32ob b.v32ob
+.RE
+.fi
+.SH DIAGNOSTICS
+Les messages commencent par
+.BR v32asld: .
+Outre les erreurs ci\-dessus, un avertissement est donné pour une déclaration
+.B extern
+qui n'est jamais utilisée (supprimé par
+.BR \-w ).
+.SH "VOIR AUSSI"
+.BR v32as (1),
+.BR v32as\-language (7)
+.PP
+docs/OBJECT.md dans la distribution des sources décrit les formats d'objet et
+d'archive.

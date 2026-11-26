@@ -76,12 +76,15 @@ line editing in the interactive mode when it is found).
 ```
 make
 make test        # optional
-make install     # ~/bin, ~/share/v32as/lib and ~/man
+make install     # ~/bin, ~/share/v32as/lib, ~/man and ~/share/doc/v32as
 ```
 
 `make install PREFIX=/usr/local` (or `make sysinstall`) uses
-`PREFIX/bin`, `PREFIX/share/v32as/lib` and `PREFIX/share/man`. `DESTDIR`,
-`BINDIR`, `MANDIR` and `LIBDIR` are honoured. The install directory of the
+`PREFIX/bin`, `PREFIX/share/v32as/lib`, `PREFIX/share/man` and
+`PREFIX/share/doc/v32as`. `DESTDIR`, `BINDIR`, `MANDIR`, `LIBDIR` and
+`DOCDIR` are honoured, and `DEST_LANG=en|es|fr` (default `en`) picks the
+language of the installed documents and of the `v32as(1)` and `v32asld(1)`
+manual pages. The install directory of the
 libraries is compiled into `v32as`, so `%include <v32as.inc>` works
 wherever you install it. `make uninstall` removes it again.
 

@@ -1,0 +1,993 @@
+'\" -*- coding: UTF-8 -*-
+.TH V32AS 1 "26 novembre 2026" "v32as 20261126-dev" "Manuel de l'assembleur Vircon32"
+.SH NOM
+v32as \- assembleur pour la console Vircon32
+.SH SYNOPSIS
+.B v32as
+.RI [ options ]
+.RI [ FICHIER ...| \- ]
+.br
+.B v32as \-C
+.RI [ options ]
+.I FICHIER
+.br
+.B v32as \-E
+.RB [ \-P ]
+.RI [ options ]
+.IR FICHIER ...
+.br
+.B v32as \-T
+.RI [ options ]
+.IR FICHIER ...
+.br
+.B v32as \-i
+.RI [ options ]
+.SH DESCRIPTION
+.B v32as
+assemble le langage d'assemblage Vircon32 en un fichier VBIN, le format du
+programme d'une cartouche, ce qui est le même travail que l'outil officiel
+.B assemble .
+L'analyseur lexical est généré par flex et l'analyseur syntaxique par bison.
+Sa sortie est, octet pour octet, celle de l'assembleur officiel pour chaque
+opcode sous toutes ses formes d'opérandes légales, pour tous les ports d'E/S et
+valeurs de ports, et pour toutes les directives de données.
+.PP
+Au-delà du langage officiel,
+.B v32as
+possède un préprocesseur (macros de type fonction,
+.BR %if ,
+.BR %macro ,
+.BR %rep ,
+et plus encore), des formes de nombres supplémentaires, des étiquettes locales,
+des transferts vers les registres internes, un format d'objet relogeable avec un
+éditeur de liens
+.RB ( v32asld (1)),
+et plusieurs sorties de débogage.
+.B \-\-standard
+désactive toutes les extensions.
+Le langage est résumé dans
+.BR v32as\-language (7)
+et décrit en détail dans le README et les fichiers sous
+.IR docs/ .
+.PP
+Avec un seul fichier d'entrée, la sortie est nommée d'après le fichier d'entrée
+dont l'extension est remplacée par
+.I .vbin
+(ou
+.I .v32ob
+avec
+.BR \-C ).
+Par exemple
+.B v32as game.asm
+écrit
+.IR game.vbin .
+Un nom sans extension reçoit simplement l'extension à la suite.
+Plusieurs fichiers d'entrée sont assemblés comme un seul programme, dans l'ordre
+donné, et partagent un même état de préprocesseur (macros, définitions,
+contextes) et une même table de symboles.
+Avec
+.BR \- ,
+ou sans nom de fichier lorsque l'entrée standard est redirigée ou reçoit un tube,
+le programme est lu sur l'entrée standard ; le binaire est alors écrit sur la
+sortie standard, sauf si
+.B \-o
+est donné (il n'est jamais écrit sur un terminal).
+Sans nom de fichier et avec un terminal sur l'entrée standard,
+.B v32as
+affiche son résumé d'utilisation sur la sortie d'erreur et se termine avec le
+code 2.
+.PP
+Avec
+.BR \-i ,
+.B v32as
+démarre un mode interactif : chaque ligne est assemblée dès qu'elle est saisie.
+Les commandes sont
+.BR .help ,
+.BR .labels ,
+.BR .dump ,
+.BR .reset ,
+et
+.B .quit
+(aussi
+.B .exit
+ou Ctrl\-D).
+.PP
+Les erreurs et les fichiers de débogage renvoient au fichier et à la ligne que
+vous avez écrits, y compris à travers
+.B %include
+et les macros.
+Une erreur à l'intérieur d'une expansion de macro est signalée à la ligne de
+l'invocation, suivie d'une note nommant la macro et l'endroit où elle est
+définie.
+.SH OPTIONS
+Les options peuvent être placées avant ou après les noms de fichiers.
+.SS "Sortie et cible"
+.TP
+.BR \-o ", " \-\-output =\fIFICHIER\fP
+Nomme le fichier de sortie.
+Par défaut, c'est le nom du fichier d'entrée dont l'extension est remplacée
+(voir ci\-dessus), ou la sortie standard lorsque l'entrée est l'entrée standard.
+.TP
+.BR \-b ", " \-\-bios
+Assemble pour le BIOS : les adresses commencent à 0x10000000.
+.TP
+.BR \-c ", " \-\-cart
+Assemble pour une cartouche : les adresses commencent à 0x20000000.
+C'est la valeur par défaut.
+.TP
+.BR \-O ", " \-\-origin " \fIADDR\fP"
+Assemble pour n'importe quelle adresse de base (par exemple du code qui
+s'exécutera depuis la RAM).
+.I ADDR
+est lue comme un entier C (décimal, hexadécimal en 0x ou octal avec zéro
+initial) et doit tenir sur 32 bits.
+Ne peut pas être combiné avec
+.B \-b
+ou
+.BR \-c .
+.TP
+.B \-\-v32x
+Écrit un exécutable v32nix (V32X) au lieu d'un VBIN : un en\-tête de 8 mots
+(nombre magique
+.IR V32X ,
+version 1, mots d'en\-tête, mots de programme, mots de données, entrée 0,
+origine, indicateurs 0) suivi du programme.
+Nécessite
+.BR \-\-origin .
+Le nombre de mots de données mis à zéro vient de
+.BR \-\-v32x\-data ,
+ou sinon du
+.B %define __V32X_DATAWORDS
+.I N
+de la source, ce qu'écrit
+.B v32cc \-\-data\-after\-text
+(0 si aucun des deux n'est présent).
+.TP
+.BI \-\-v32x\-data= N
+Le nombre de mots de données enregistré dans l'en\-tête V32X.
+.TP
+.BR \-T ", " \-\-text
+Affiche un listage lisible (les encodages des instructions) au lieu d'écrire un
+VBIN.
+Les adresses (lignes
+.BR OFFSET: )
+ne sont affichées que si
+.BR \-b ,
+.BR \-c
+ou
+.B \-O
+donne une base.
+.TP
+.BR \-n ", " \-\-none
+Identique à
+.B \-\-text
+sans adresse de base.
+.TP
+.BR \-B ", " \-\-binary
+Dit ce qui est déjà le défaut (un VBIN est écrit).
+Ne peut pas être combiné avec
+.BR \-T ,
+.BR \-n
+ou
+.BR \-E .
+.TP
+.BR \-C ", " \-\-object
+Écrit un objet relogeable (FICHIER.v32ob) pour l'éditeur de liens
+.BR v32asld (1)
+au lieu d'un VBIN.
+Les étiquettes sont relatives à l'objet ;
+.B global
+et
+.B extern
+nomment les symboles partagés avec d'autres objets, et les informations de
+débogage sont stockées dans l'objet.
+Interdit avec
+.BR \-b ,
+.BR \-c ,
+.BR \-O ,
+.BR \-g ,
+.BR \-r ,
+.BR \-T ,
+.BR \-n ,
+.B \-E
+ou
+.BR \-B ,
+ainsi qu'avec
+.BR \-\-standard  ;
+l'adresse de base, les fichiers de débogage et les listes de relocalisations
+sont produits par l'éditeur de liens.
+.B \-\-map
+est permis.
+.SS "Sorties de débogage et de symboles"
+.TP
+.BR \-g ", " \-\-debug [= \fIMODE\fP]
+Écrit aussi
+.IR SORTIE .debug
+(le nom du fichier de sortie plus
+.IR .debug ,
+par exemple
+.IR game.vbin.debug ),
+un fichier CSV de
+.IR address,file,line[,label] .
+.I MODE
+est
+.B program
+(la valeur par défaut),
+.B vbin
+ou
+.BR v32 ,
+comme dans le
+.BR "\-g MODE"
+de l'assembleur officiel ;
+il peut aussi être donné comme mot suivant.
+Les adresses sont des adresses de mots absolues (comme 0x20000000) pour
+.BR program ,
+et de vrais décalages en octets dans le fichier .vbin (en\-tête de 0x0C octets)
+ou .v32 (en\-tête de 0x8C octets) pour
+.B vbin
+et
+.BR v32 .
+Un fichier source nommé littéralement
+.IR program ,
+.I vbin
+ou
+.I v32
+doit être écrit
+.IR ./program .
+Nécessite une sortie binaire dans un fichier.
+Voir
+.B "LE FICHIER DEBUG"
+ci\-dessous.
+Si la source contient des lignes
+.BR ;@var ,
+.IR SORTIE .vars
+est écrit aussi.
+Si elle contient une ligne
+.BR ";@lang X" ,
+les deux fichiers commencent par la ligne de commentaire
+.BR "# lang X" .
+Sauf si
+.B \-\-standard
+est donné,
+.IR SORTIE .sym
+est écrit également : les fonctions
+.RB ( F ),
+les variables de compilateur
+.RB ( V )
+et les étiquettes de données
+.RB ( R )
+sous la forme
+.IR kind,name,address,words,cfile,cline
+avec les adresses finales (le format du
+.IR NAME .asm.sym
+de v32cc).
+.TP
+.BI \-\-map= FICHIER
+.I FICHIER
+est le fichier de débogage du compilateur (CSV
+.IR asmfile,asmline,cfile,cline[,function] ,
+tel que l'écrit
+.B v32cc \-g ).
+Avec
+.B \-g
+le fichier .debug nomme alors le fichier et la ligne C (et la fonction, dans la
+colonne d'étiquette) de chaque instruction ; les instructions dont la ligne
+d'assemblage ne figure pas dans la carte sont omises.
+Avec
+.B \-C
+l'objet stocke les lignes C.
+Sans
+.B \-g
+chaque erreur et chaque avertissement est suivi d'une note telle que
+.B a.c:123: note: the assembly line above was generated from here
+(ou
+.B it follows the code generated from here
+nommant la ligne cartographiée précédente la plus proche).
+Les noms de fichiers sont comparés d'abord exactement, puis par nom de base (la
+plus longue fin de répertoire en commun l'emporte), de sorte que
+.I main.asm
+dans la carte correspond à
+.IR out/kernel/main.asm .
+Si aucune instruction ne correspond, un avertissement liste les noms trouvés
+dans la carte.
+.TP
+.BR \-r ", " \-\-relocs =\fIFICHIER\fP
+Écrit la liste des mots qui contiennent une adresse (voir
+.BR "LE FICHIER DE RELOCALISATION" ).
+Nécessite une sortie binaire dans un fichier.
+.TP
+.BI \-\-symbols= FICHIER
+Écrit la table des étiquettes, une ligne
+.I address,name,kind
+par étiquette, triée par adresse (voir
+.BR "LE FICHIER DE SYMBOLES" ).
+Indisponible avec
+.BR \-C ,
+\-E, ou le mode interactif (utilisez
+.B v32asld \-\-symbols
+pour les objets).
+.TP
+.B \-\-symbols\-all
+Avec
+.BR \-\-symbols  :
+liste aussi les étiquettes locales au fichier (sous la forme
+.IR function.local ),
+chaque
+.B %define global_NAME
+number en genre
+.BR V ,
+et chaque
+.I DATASYM+N
+auquel le programme se réfère sous la forme
+.IR N,DATASYM+N,V .
+.TP
+.B \-\-stats
+Quand l'exécution est terminée, affiche sur la sortie d'erreur l'utilisation propre du tas par v32as : le pic et ce qui est alloué alors,
+en octets et en mots de 4 octets, la même chose après le préprocessage (pour un fichier assemblé au fur et à mesure qu'il est préprocessé, après son assemblage aussi),
+et le nombre d'allocations.
+Les chiffres comptent les appels que v32as fait à l'allocateur de la bibliothèque C ; ils sont indisponibles
+(et l'option le dit) là où la bibliothèque ne peut pas rapporter la taille d'un bloc.
+Sur une machine où un caractère ou un pointeur est un mot, ils sont un repère, pas les chiffres de cette machine.
+Construite avec
+.B v32cc
+(pour v32nix), l'option affiche à la place des mots, d'après l'allocateur de la bibliothèque C :
+la taille maximale du tas (le break, avec ses trous et ses en\-têtes ; échantillonnée après chaque allocation de v32as, donc une borne inférieure),
+et les mots utilisés, libres et dans le plus grand trou après le préprocessage et à la fin.
+.TP
+.BR \-MD ", " \-MMD
+Écrit les fichiers lus (les sources, les fichiers
+.B %include
+et les fichiers
+.B datafile )
+sous forme de règle de Makefile, dans le nom de la sortie avec
+.I .d
+à la place de l'extension, sauf si
+.B \-MF
+le nomme.
+.B \-MMD
+en est un synonyme (tous les fichiers sont listés).
+.TP
+.BI \-MF " FICHIER"
+Nomme le fichier de dépendances (implique
+.BR \-MD ).
+.TP
+.BI \-MT " CIBLE"
+Nomme la cible de la règle (implique
+.BR \-MD ).
+Par défaut, c'est le nom du fichier de sortie.
+.TP
+.B \-MP
+Ajoute une règle vide pour chaque dépendance autre que les sources nommées sur
+la ligne de commande.
+.SS "Préprocesseur"
+.TP
+.BR \-D ", " \-\-define " \fINOM\fP[=\fIVALEUR\fP]"
+Prédéfinit une macro (la valeur vaut 1 par défaut).
+Un
+.B %define
+du même nom dans la source avertit et l'emporte, sauf si l'option est écrite
+.BI \-D! NOM = VALEUR
+(ou
+.BI \-\-force\-define " NOM=VALEUR" ),
+auquel cas la ligne de commande l'emporte.
+.TP
+.BR \-U ", " \-\-undef " \fINOM\fP"
+Retire un symbole prédéfini.
+.B \-D
+et
+.B \-U
+sont traités dans l'ordre de la ligne de commande.
+.TP
+.BR \-I ", " \-\-include " \fIRÉP\fP"
+Ajoute
+.I RÉP
+au chemin de recherche de
+.BR "%include <nom>" ,
+de
+.BR "%include \(dqnom\(dq" " (après le répertoire du fichier qui inclut)"
+et de
+.BR datafile .
+Peut être répété. Après ceux\-ci (et pas avec
+.BR \-\-standard )
+v32as cherche aussi dans le répertoire où les bibliothèques de macros ont été installées et, à côté de
+l'exécutable,
+.IR lib ", " ../lib ", " ../share/v32as/lib ,
+.I ../Vircon32/v32tools/include/v32as
+et
+.I include/v32as
+(la disposition des zips de publication), là où ils existent.
+.TP
+.BR \-E ", " \-\-preprocess
+N'exécute que le préprocesseur et affiche le résultat (sur la sortie standard,
+ou dans le fichier nommé par
+.BR \-o ).
+Les lignes sont précédées de marqueurs de la forme
+.BR "# LINE \(dqFILE\(dq" .
+.TP
+.B \-P
+Avec
+.BR \-E ,
+omet ces marqueurs.
+.TP
+.B \-Wredefine, \-Wno\-redefine
+Avertit (par défaut) ou n'avertit pas lorsqu'un
+.B %define
+change la valeur d'une macro.
+.B \-w
+et
+.B \-\-standard
+le font aussi taire.
+.TP
+.B \-Wmarkers, \-Wno\-markers
+Avertit (désactivé par défaut) d'une ligne
+.BR ;@src ,
+.B ;@var
+ou
+.B ;@scope
+mal formée, d'un
+.B ";@scope }"
+déséquilibré, et d'un bloc laissé ouvert.
+Un
+.B ;@src
+mal formé est traité comme
+.BR ";@src \-" .
+Il avertit aussi d'un
+.B ;@lang
+sans nom, d'un second
+.B ;@lang
+avec un autre nom (ignoré), et d'un
+.B ;@var
+dont le symbole
+.B loc=
+n'est pas connu lorsque le fichier est écrit.
+.SS "Définition de la ROM et scripts de construction"
+Ce sont des extensions (une erreur avec
+.BR \-\-standard )
+qui nécessitent un VBIN de BIOS ou de cartouche écrit dans un fichier.
+Rien n'est écrit tant que l'une d'elles n'est pas donnée.
+Elles utilisent ce que dit la source avec
+.BR %title ,
+.BR %version ,
+.B %texture
+et
+.BR %sound  ;
+voir
+.BR v32as\-language (7).
+.TP
+.BI \-\-rom\-xml " FICHIER"
+Écrit aussi la définition de ROM que lit
+.BR packrom .
+Elle nomme le VBIN, ainsi que chaque image et chaque son : un
+.I .png
+ou un
+.I .wav
+sous la forme du fichier
+.I .vtex
+ou
+.I .vsnd
+que
+.B png2vircon
+ou
+.B wav2vircon
+en fabriquent, à côté de la définition ; tout autre fichier par son chemin.
+Les chemins sont relatifs à la définition.
+.TP
+.BI \-\-rom\-xml\-opt " FICHIER"
+La même chose pour la construction faite à partir de la sortie de
+.BR v32opt  :
+le VBIN est
+.IR NOM Opt.vbin
+et le titre se termine par
+.IR " [optimized]" .
+.TP
+.BR \-\-build\-scripts [= \fIFORMATS\fP]
+Écrit
+.I Make.sh
+et
+.I Make.bat
+(FORMATS est
+.BR sh ,
+.B bat
+ou
+.BR sh,bat ,
+la valeur par défaut), ainsi que les définitions qu'ils utilisent, à côté de la première source (dans son parent pour une disposition
+.I src/
+et
+.I obj/ ).
+Les scripts exécutent, à commencer par l'optimiseur :
+.B v32as \-E \-P
+et
+.B v32opt \-O3
+(seulement lorsqu'il est installé, et en lui donnant la source préprocessée parce qu'il ne connaît ni les macros ni les conditionnelles ;
+si l'un des deux échoue, seule la cartouche ordinaire est construite),
+.BR v32as ,
+.B png2vircon
+et
+.BR wav2vircon ,
+et
+.BR packrom ,
+qui écrit
+.IR bin/NOM .v32
+(et
+.IR bin/NOM Opt.v32 ).
+Les chemins qu'ils contiennent sont relatifs au répertoire du script.
+Un fichier appelé
+.I Make.sh
+ou
+.I Make.bat
+qui n'a pas la ligne de commentaire
+.I "Generated by v32as"
+n'est jamais remplacé, et un script dont le texte ne changerait pas n'est pas touché.
+.TP
+.B \-\-no\-build\-scripts
+Ne les écrit jamais.
+Les scripts le passent au
+.B v32as
+qu'ils lancent, et définissent
+.B V32AS_BUILD_SCRIPT
+qui a le même effet, de sorte qu'un script en cours d'exécution n'est pas réécrit.
+.TP
+.BI \-\-build\-script\-dir " RÉP"
+Écrit les scripts dans
+.I RÉP
+(qui doit exister) à la place.
+.SS "Compatibilité et diagnostics"
+.TP
+.B \-\-standard
+Être exactement l'assembleur officiel : aucune extension du langage, aucun
+préprocesseur étendu, un zéro initial signifie décimal, un seul fichier
+d'entrée, et
+.B \-v
+affiche les messages d'étape officiels.
+Voir
+.BR v32as\-language (7)
+pour la liste.
+.TP
+.BR \-w ", " \-\-no\-warnings
+Inhibe tous les avertissements.
+.TP
+.BR \-s ", " \-\-step
+Fait une pause après chaque instruction, en attendant Entrée sur le terminal
+(fichiers seulement ; sans effet avec
+.BR \-\-standard ,
+et ignoré avec un avertissement lorsque l'entrée standard n'est pas un
+terminal).
+.TP
+.BR \-v ", " \-\-verbose
+Trace l'assemblage de chaque instruction (les champs de bits encodés) sur la
+sortie d'erreur.
+.TP
+.BR \-i ", " \-\-interactive
+Démarre le mode interactif (voir DESCRIPTION) sur l'entrée standard.
+Il n'accepte aucun fichier d'entrée.
+Il se combine avec
+.BR \-b ", " \-c ", " \-O ", " \-T ", " \-n
+(sans aucune d'elles, les adresses commencent à 0),
+.BR \-D ", " \-U ", " \-I ,
+.BR \-w ", " \-v
+et
+.BR \-\-standard  ;
+une option qui écrit un fichier ou exige un programme complet
+.RB ( "\-o \-E \-B \-C \-g \-r \-\-symbols \-\-map \-MD \-\-rom\-xml \-\-rom\-xml\-opt \-\-build\-scripts \-\-v32x \-s" )
+est une erreur d'utilisation.
+L'édition de ligne et l'historique sont disponibles lorsque v32as a été
+construit avec GNU readline (ou libedit de macOS).
+.TP
+.BR \-h ", " \-\-help
+Affiche le texte d'utilisation et se termine.
+.TP
+.BR \-V ", " \-\-version
+Affiche la version et se termine.
+.PP
+Les mots
+.BR bios ,
+.BR cart ,
+.BR none ,
+.BR binary ,
+.BR step ,
+.BR verbose
+et
+.BR help ,
+comme arguments nus, sont acceptés comme les options correspondantes, sauf si un
+fichier de ce nom existe.
+.SH "LE FICHIER DEBUG"
+Un
+.B \-g
+simple écrit une ligne par instruction :
+.IR address,file,line ,
+plus
+.I ,label
+pour une instruction où une étiquette est définie (la première).
+Les adresses sont identiques octet pour octet à celles du
+.BR "\-g program"
+de l'assembleur officiel.
+.PP
+Lorsque la source contient des lignes de commentaire à elles seules de la forme
+.B ;@src FILE:LINE
+(ou
+.IR FILE:LINE:COL  ;
+c'est ce qu'écrivent
+.B v32lua \-g
+et
+.B v32cc \-g ),
+les entrées viennent d'elles à la place : une entrée par marqueur, à l'adresse de
+la première instruction qui le suit, avec la fonction en quatrième colonne.
+.B ;@src \-
+signifie « pas de source » : la première instruction qui le suit reçoit l'entrée
+.IR address,\-,0 .
+FILE est séparé de LINE au dernier deux\-points, de sorte qu'une lettre de
+lecteur ne pose pas de problème.
+Une fonction commence à une étiquette
+.B __function_NAME:
+(la colonne contient
+.IR NAME )
+et se termine à une ligne
+.B ;@fn __function_NAME ...
+qui suit son corps, à un
+.BR ";@src \-" ,
+ou à la fin du programme ; les fonctions s'imbriquent.
+Lorsque la source dit
+.B ;@lang X
+(une ligne de commentaire à elle seule, avant la première fonction ; la première
+compte) avec
+.I X
+différent de
+.BR lua ,
+les fonctions ne s'imbriquent pas : la prochaine étiquette
+.B __function_NAME:
+de premier niveau termine la fonction précédente, de sorte qu'un compilateur C
+n'a besoin ni de
+.B ;@src \-
+ni de
+.B ;@fn
+après chaque corps.
+Un
+.B ;@fn
+écrit au\-dessus d'une étiquette n'est jamais une fin.
+Les instructions qu'un marqueur appliqué ne commence pas n'ont pas d'entrée ;
+aucune étiquette n'est écrite en mode marqueurs.
+Les entrées de
+.B \-\-map
+l'emportent pour les instructions que la carte nomme.
+Avec
+.B \-\-standard
+les marqueurs sont de simples commentaires.
+.PP
+Lorsque la source contient
+.B ;@lang X
+et que les entrées viennent des marqueurs (pas avec
+.BR \-\-map ),
+la première ligne du fichier est le commentaire
+.BR "# lang X" .
+Les lecteurs doivent ignorer toute ligne qui commence par
+.BR # .
+Il n'y a pas de telle ligne sans
+.BR ;@lang .
+.SH "LE FICHIER VARS"
+Avec
+.B \-g
+et des lignes source de la forme
+.B ;@var NAME loc=... type=... [flags]
+et des lignes
+.B ;@scope {
+et
+.B ;@scope }
+,
+.IR SORTIE .vars
+est écrit : les variables locales sous forme de plages d'adresses.
+(Un ancien fichier est supprimé lorsque la source n'a pas de telles lignes.)
+Les adresses sont comme dans le fichier .debug pour le même
+.IR MODE  ;
+END est la première adresse hors portée.
+Une ligne CSV chacune, dans l'ordre de START, un bloc avant ses variables.
+Une ligne
+.B ;@home FROM TO
+(écrite par v32opt lorsqu'il déplace une variable) termine l'enregistrement de chaque variable dans la portée dont l'emplacement est FROM et en commence un avec l'emplacement TO
+dans le même bloc ;
+.B optimized\-out
+comme TO signifie que la valeur a disparu.
+.PP
+.nf
+.RS
+scope,START,END,DEPTH[,FUNCTION]
+var,START,END,NAME,LOC,TYPE,FLAGS,DEPTH[,FUNCTION]
+.RE
+.fi
+.PP
+LOC est le
+.B loc=
+tel qu'écrit (par exemple
+.BR BP\-3 ,
+.BR R5 ,
+.BR @0x20003000 ,
+ou
+.B \-
+pour
+.BR optimized\-out ),
+sauf qu'un symbole est résolu : une étiquette, un
+.B label+N
+ou
+.B label\-N
+(N décimal ou 0x...), ou un nom qui a été
+.BR %define \-é
+comme un nombre ou comme l'une de ces formes (par exemple
+.BR "var_NAME" ),
+est écrit sous la forme
+.BI @0x ADRESSE
+lorsqu'il est connu à la fin de l'assemblage.
+Une étiquette donne son adresse dans le style de la colonne START du mode
+.B \-g  ;
+un nombre
+.BR %define \-é
+est une valeur simple et est écrit tel quel.
+Un symbole inconnu reste tel qu'écrit (et avertit sous
+.BR \-Wmarkers ).
+TYPE est le
+.B type=
+(ou
+.BR \- ),
+FLAGS les mots nus qui le suivent joints par
+.B +
+(ou
+.BR \- ).
+DEPTH vaut 0 pour la portée propre de la fonction et 1, 2, ... pour les blocs qu'elle contient.
+Une variable est dans la portée à partir de la première instruction qui suit sa ligne jusqu'au
+.B ;@scope }
+de son bloc (ou la fin de la fonction), ou jusqu'à un autre
+.B ;@var
+du même nom dans le même bloc.
+Les plages vides sont omises.
+Avec
+.B ;@lang X
+la première ligne est
+.BR "# lang X" ;
+les lecteurs doivent ignorer les lignes qui commencent par
+.BR # .
+.SH "LE FICHIER DE RELOCALISATION"
+.B \-r
+écrit une ligne par mot qui contient une adresse résolue à partir d'une étiquette
+(code ou données, y compris
+.IR label+N )
+ou calculée à partir de l'adresse de l'instruction elle\-même
+.RB ( "MOV Rn, IP" ,
+et les adresses de modification de
+.B IR
+et
+.BR IV ).
+Les nombres simples qui ressemblent seulement à des adresses ne sont jamais listés.
+Les lignes sont
+.IR index,0xVALUE ,
+triées par indice croissant sans doublon.
+.I index
+est l'indice de mot à partir de zéro dans l'image, sans compter l'en\-tête VBIN de 3
+mots ; la première instruction est le mot 0.
+.I VALUE
+est la valeur telle qu'assemblée, à la base pour laquelle l'image a été assemblée, de sorte
+qu'un chargeur qui place l'image à une nouvelle base ajoute la différence à ces mots.
+Si la source déclare
+.B datasym
+(voir ci\-dessous), chaque ligne a une troisième colonne,
+.B C
+pour une adresse de code (qui se déplace avec l'adresse de chargement) et
+.B D
+pour une référence à un datasym (qui se déplace avec la base des données du module).
+.SH "LE FICHIER DE SYMBOLES"
+.B \-\-symbols
+écrit
+.IR 0xADDRESS,name,kind ,
+trié par adresse.
+.I kind
+est
+.B F
+(du code suit) ou
+.B D
+(des données suivent, ou rien).
+Avec
+.B \-\-symbols\-all
+des lignes de genre
+.B V
+sont ajoutées : la valeur de chaque define
+.B global_NAME
+dans la colonne d'adresse, et
+.I N,DATASYM+N,V
+avec le décalage dans la colonne d'adresse.
+.SH "CODE DE RETOUR"
+.TP
+.B 0
+Succès (les avertissements ne changent pas le code).
+.TP
+.B 1
+Une erreur d'assemblage ou de préprocesseur, ou un fichier d'entrée illisible.
+(Avec
+.BR \-\-standard ,
+plus d'un fichier d'entrée.)
+.TP
+.B 2
+Une erreur d'utilisation (options erronées ou en conflit, un argument manquant, ou aucun fichier d'entrée
+avec un terminal sur l'entrée standard), ou un fichier de sortie qui ne peut pas être écrit.
+.SH ENVIRONNEMENT
+.TP
+.B V32AS_BUILD_SCRIPT
+Lorsqu'elle est définie, les options de scripts de construction (\fB\-\-build\-scripts\fR) sont ignorées, comme avec
+.BR \-\-no\-build\-scripts  ;
+les scripts la définissent pour les programmes qu'ils lancent.
+.PP
+Les scripts eux\-mêmes lisent
+.BR V32AS ,
+.BR V32OPT ,
+.BR PACKROM ,
+.B V32OPT_FLAGS
+(les options pour
+.BR v32opt ,
+.B \-O3
+par défaut),
+.B PNG2VIRCON
+et
+.B WAV2VIRCON
+(le programme à lancer à la place de celui trouvé dans le
+.BR PATH )
+et
+.B NO_OPT
+(définie : ne pas lancer
+.BR v32opt ).
+.SH FICHIERS
+.TP
+.IR FICHIER .vbin
+La sortie par défaut pour une entrée
+.IR FICHIER .asm.
+.TP
+.IR FICHIER .v32ob
+La sortie par défaut avec
+.BR \-C .
+.TP
+.IR NOM .xml ", " NOM Opt.xml
+Les définitions de ROM écrites par
+.B \-\-rom\-xml
+et
+.BR \-\-build\-scripts .
+.TP
+.IR Make.sh ", " Make.bat
+Les scripts de construction écrits par
+.BR \-\-build\-scripts .
+.TP
+.IR SORTIE .debug ", " SORTIE .vars ", " SORTIE .sym
+Écrits par
+.BR \-g .
+.TP
+.I lib/v32as.inc, lib/control.inc
+Bibliothèques de macros pour
+.BR %include  ;
+voir
+.BR v32as\-inc (3)
+et
+.BR v32as\-control (3).
+Un v32as installé les trouve de lui\-même
+.RB ( "make install"
+les place dans
+.IR PREFIX /share/v32as/lib ,
+un zip de publication dans
+.I include/v32as
+à côté de l'exécutable) ; depuis l'arborescence des sources, ajoutez
+.BR "\-I lib" .
+.SH EXEMPLES
+Assembler un programme de cartouche (écrit
+.IR hello.vbin ) :
+.PP
+.nf
+.RS
+v32as hello.asm
+.RE
+.fi
+.PP
+Utiliser la bibliothèque de macros, conserver les fichiers de débogage et de relocalisation et la table des étiquettes :
+.PP
+.nf
+.RS
+v32as \-g \-r hello.rel \-\-symbols hello.sym hello.asm
+.RE
+.fi
+.PP
+Essayer des instructions de façon interactive, à des adresses de cartouche :
+.PP
+.nf
+.RS
+v32as \-i \-c
+.RE
+.fi
+.PP
+Montrer ce que le préprocesseur fait de la source :
+.PP
+.nf
+.RS
+v32as \-E \-P hello.asm
+.RE
+.fi
+.PP
+Assembler pour le BIOS, ou pour n'importe quelle adresse, ou dans le seul langage officiel :
+.PP
+.nf
+.RS
+v32as \-b bios.asm
+v32as \-O 0x3000 \-o ram.bin code.asm
+v32as \-\-standard game.asm
+.RE
+.fi
+.PP
+Définitions en ligne de commande, et une règle pour make :
+.PP
+.nf
+.RS
+v32as \-DDEBUG \-DLEVEL=3 \-MD \-MP game.asm
+.RE
+.fi
+.PP
+Assemblage et édition de liens séparés :
+.PP
+.nf
+.RS
+v32as \-C a.asm
+v32as \-C b.asm
+v32asld \-o prog.vbin a.v32ob b.v32ob
+.RE
+.fi
+.PP
+Un exécutable V32X pour v32nix, avec 16 mots de données mis à zéro derrière le programme :
+.PP
+.nf
+.RS
+v32as \-\-origin 0x100000 \-\-v32x \-\-v32x\-data 16 \-o prog.v32x prog.asm
+.RE
+.fi
+.PP
+Assembler depuis l'entrée standard :
+.PP
+.nf
+.RS
+echo ' hlt' | v32as \- > out.vbin
+.RE
+.fi
+.SH DIAGNOSTICS
+Les diagnostics ont la forme
+.IR file:line[:column]:\ error:\ message
+ou
+.IR "warning: message" .
+Avertissements typiques : un nombre avec un zéro initial est octal ici mais décimal dans l'assembleur
+officiel ; un numéro de port qui n'est pas un port d'E/S connu ou qui ne tient pas
+sur 14 bits ; du code qui se modifie lui\-même
+.RB ( "MOV IR" ", " "MOV IV" )
+hors de la RAM ; un
+.B %define
+qui redéfinit un nom
+.B \-D 
+; une macro qui a le même nom qu'une instruction.
+.PP
+Après une erreur de préprocesseur, le programme n'est pas assemblé, et aucune
+plainte d'étiquette indéfinie n'est ajoutée.
+.SH NOTES
+Une étiquette commence par un tiret bas.
+Les mnémoniques, les registres et les noms de directives sont insensibles à la casse ; les noms de macros ne le sont
+pas.
+.PP
+.B datasym NAME
+(syntaxe étendue) déclare un nom dont la valeur est 0, de sorte que
+.I NAME+17
+est un mot contenant 17 qui est marqué
+.B D
+dans le fichier de relocalisation.
+.B v32cc \-\-pic\-data
+écrit ainsi l'adresse de chaque globale.
+.SH LIMITES
+La profondeur d'inclusion est limitée à 20 niveaux, l'imbrication des macros et de
+.B %rep
+à 64 niveaux, un
+.B %rep
+à 1 000 000 d'itérations, et une exécution à environ 4 millions de lignes rejouées de corps de macro ou de
+.B %rep .
+.SH "VOIR AUSSI"
+.BR v32asld (1),
+.BR v32as\-language (7),
+.BR v32as\-inc (3),
+.BR v32as\-control (3),
+.BR v32cc (1)
+.PP
+README.md, docs/PREPROCESSOR.md et docs/OBJECT.md dans la distribution des sources.

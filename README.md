@@ -1,5 +1,7 @@
 # v32as — Vircon32 assembler and linker
 
+**English** | [Español](README.es.md) | [Français](README.fr.md)
+
 `v32as` assembles Vircon32 assembly language into a VBIN file, the format
 of a cartridge program. Given the same source it writes the same bytes as
 the official `assemble`  tool, and it adds a preprocessor  with macros, a
@@ -95,16 +97,24 @@ on your `PATH`.
     make            # builds bin/v32as and bin/v32asld  (needs flex, bison, cc; readline optional)
     make test       # differential/golden tests (including .debug files) (POSIX sh + od + cmp + grep; GNU or BSD)
     make realcheck  # against the official assembler, built from a ComputerSoftware checkout (see below)
-    make install    # v32as, v32asld, lib/*.inc and the man pages into ~/bin, ~/share/v32as/lib and ~/man
-    make install PREFIX=/usr/local     # or any other PREFIX: PREFIX/bin, PREFIX/share/man, PREFIX/share/v32as/lib
-    make sysinstall # make install PREFIX=/usr/local
-    make uninstall  # removes what install put there (same PREFIX/DESTDIR/BINDIR/MANDIR/LIBDIR)
+    make install    # v32as, v32asld, lib/*.inc, the man pages and the documents into ~/bin, ~/share/v32as/lib, ~/man and ~/share/doc/v32as
+    make install PREFIX=/usr/local     # or any other PREFIX: PREFIX/bin, PREFIX/share/man, PREFIX/share/v32as/lib, PREFIX/share/doc/v32as
+    make sysinstall # make install PREFIX=/usr/local (PREFIX and DESTDIR are honoured)
+    make uninstall  # removes what install put there (same PREFIX/DESTDIR/BINDIR/MANDIR/LIBDIR/DOCDIR)
     make mancheck   # lints the man pages (plain sh and awk, no groff needed)
-    make archive    # ../v32as-project.zip, without build products
+    make version    # stamps the header's version into v32asld and the man pages; VERSION=YYYYMMDD-status sets a new one first
+    make archive    # ../v32as-project-YYYYMMDD.zip (the date of the VERSION), without build products
 ```
 
 `install` honours  `DESTDIR` (for packaging)  and the directories  can be
-set one  by one: `BINDIR`,  `MANDIR`, `LIBDIR`. `make debug`  builds with
+set one  by one: `BINDIR`,  `MANDIR`, `LIBDIR`, `DOCDIR`. `DEST_LANG=en|es|fr`
+(default `en`) chooses the language of the installed  documents (README,
+`docs/USAGE.md`) and of the `v32as(1)` and `v32asld(1)` manual pages, for
+example `sudo make sysinstall DEST_LANG=es`; the other manual pages
+(sections 3 and 7) and the design documents (`docs/OBJECT.md`,
+`docs/PREPROCESSOR.md`) exist in English only. The version is the `VERSION` line of
+`inc/v32as.h`; `make version VERSION=20261126-dev` (`V=` also works)
+rewrites it, `src/ld.c` and the `.TH` line of every manual page. `make debug`  builds with
 `-g -O0`. A CMake  build is also there (`cmake -S  . -B build-cmake`; see
 the  head of  `CMakeLists.txt`  for install,  `ctest`  and `cpack`).  GNU
 readline is used for the interactive  mode when its development files are

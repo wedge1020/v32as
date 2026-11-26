@@ -5,6 +5,22 @@ listed here is described in `README.md`; this file records what each round (a se
 projects that use the assembler) added or fixed. Before round 9 the assembler had the features described in the
 README's "History and compatibility" section and the preprocessor phases 1 to 3 of `docs/PREPROCESSOR.md`.
 
+## 20261126-dev: release preparation
+
+- **Version**: `20261126-dev` in `inc/v32as.h` and `src/ld.c`. `make version` reads it from `inc/v32as.h` and stamps it everywhere else; `make version VERSION=YYYYMMDD-status`
+  (`V=` still works) rewrites both and stamps the `.TH` line of every man page, including the Spanish and French ones in
+  `man/es/man1` and `man/fr/man1` (their dates in the language's own form). `VDATE=YYYY-MM-DD` sets the date of the pages.
+  Without arguments it no longer stamps anything.
+- **`make archive`** writes `../v32as-project-YYYYMMDD.zip`, the date being that of the `VERSION`, not today's; `make clean` removes
+  `*.zip`, `*.patch` and any older `../v32as-project*.zip`.
+- **`make install` / `sysinstall`** also install the documents (to `DOCDIR`, default `PREFIX/share/doc/v32as`), and take
+  `DEST_LANG=en|es|fr` for the language of the documents and of the man1 pages (English where a translation is missing).
+  `PREFIX` and `DESTDIR` work with `sysinstall`.
+- **Translations**: `README.es.md`, `README.fr.md`, `docs/USAGE.es.md`, `docs/USAGE.fr.md` and the section 1 man pages in
+  Spanish and French. The design documents and man pages of sections 3 and 7 stay in English.
+- **Release workflow**: the release zips carry the translated READMEs, usage guides and man pages in `docs/v32as/`; the version
+  check also covers the translated man pages; the release text lists the real downloads.
+
 ## 2026-11-25: first release (20261125-release)
 
 - **`-i, --interactive`** starts the interactive mode. Before, it started whenever there was no input file and STDIN was a
